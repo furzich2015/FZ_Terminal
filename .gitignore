@@ -1,0 +1,31 @@
+/.tooling/
+/target/
+/node_modules/
+/dist/
+/release/
+/.vite/
+/.idea/
+/.vscode/
+/coverage/
+
+# Local configuration and credentials must never be committed.
+.env
+.env.*
+!.env.example
+electron-builder.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+id_rsa*
+id_ed25519*
+profile.json
+
+# OS/editor/runtime noise.
+.DS_Store
+Thumbs.db
+*.code-workspace
+*.log

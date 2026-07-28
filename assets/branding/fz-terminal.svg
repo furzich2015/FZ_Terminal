@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">FZ Terminal</title>
+  <desc id="description">Neon FZ monogram on a dark terminal window</desc>
+  <defs>
+    <linearGradient id="shell" x1="116" y1="92" x2="894" y2="932" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171a2a"/>
+      <stop offset="0.48" stop-color="#0c0e18"/>
+      <stop offset="1" stop-color="#07080e"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="164" y1="136" x2="862" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#61efff"/>
+      <stop offset="0.5" stop-color="#5b7cff"/>
+      <stop offset="1" stop-color="#ff4eb8"/>
+    </linearGradient>
+    <linearGradient id="letterF" x1="274" y1="302" x2="494" y2="714" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#77f5ff"/>
+      <stop offset="1" stop-color="#3cc9ff"/>
+    </linearGradient>
+    <linearGradient id="letterZ" x1="550" y1="306" x2="788" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6d9aff"/>
+      <stop offset="1" stop-color="#ff55bd"/>
+    </linearGradient>
+    <pattern id="grid" width="72" height="72" patternUnits="userSpaceOnUse">
+      <path d="M72 0H0V72" fill="none" stroke="#9da8ff" stroke-opacity=".055" stroke-width="2"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="30" stdDeviation="34" flood-color="#000" flood-opacity=".55"/>
+    </filter>
+    <filter id="cyanGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="window">
+      <rect x="76" y="76" width="872" height="872" rx="218"/>
+    </clipPath>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <rect x="76" y="76" width="872" height="872" rx="218" fill="url(#shell)"/>
+    <rect x="77.5" y="77.5" width="869" height="869" rx="216.5" fill="none" stroke="url(#rim)" stroke-opacity=".9" stroke-width="3"/>
+  </g>
+
+  <g clip-path="url(#window)">
+    <path d="M76 248H948" stroke="#dbe4ff" stroke-opacity=".1" stroke-width="3"/>
+    <rect x="76" y="248" width="872" height="700" fill="url(#grid)"/>
+    <ellipse cx="266" cy="150" rx="210" ry="175" fill="#55edff" fill-opacity=".075"/>
+    <ellipse cx="876" cy="900" rx="300" ry="270" fill="#ff4eb8" fill-opacity=".075"/>
+  </g>
+
+  <circle cx="160" cy="163" r="16" fill="#ff5f57"/>
+  <circle cx="210" cy="163" r="16" fill="#febc2e"/>
+  <circle cx="260" cy="163" r="16" fill="#28c840"/>
+  <path d="M710 163H854" stroke="#bdc7e9" stroke-opacity=".17" stroke-linecap="round" stroke-width="14"/>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="76">
+    <path d="M292 692V330H494M292 493H452" stroke="#3acaf4" stroke-opacity=".18" transform="translate(0 10)"/>
+    <path d="M292 692V330H494M292 493H452" stroke="url(#letterF)" filter="url(#cyanGlow)"/>
+    <path d="M568 330H790L562 692H798" stroke="#ef4daf" stroke-opacity=".16" transform="translate(0 10)"/>
+    <path d="M568 330H790L562 692H798" stroke="url(#letterZ)"/>
+  </g>
+
+  <rect x="674" y="776" width="132" height="28" rx="14" fill="#77f5ff" filter="url(#cyanGlow)"/>
+  <rect x="674" y="776" width="132" height="28" rx="14" fill="#d3fbff"/>
+</svg>
