@@ -6,16 +6,20 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import brandIcon from "../../assets/branding/fz-terminal.svg";
+import packageInfo from "../../package.json";
 import { useAppStore } from "../store/appStore";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ConfirmModal } from "./Modal";
 
 interface WorkspaceBarProps {
+  compactBrand?: boolean;
   onNewWorkspace: () => void;
   onCloseWorkspace: (workspaceId: string) => void;
 }
 
 export function WorkspaceBar({
+  compactBrand = false,
   onNewWorkspace,
   onCloseWorkspace,
 }: WorkspaceBarProps) {
@@ -27,6 +31,7 @@ export function WorkspaceBar({
     (state) => state.setActiveWorkspace,
   );
   const renameWorkspace = useAppStore((state) => state.renameWorkspace);
+  const moveWorkspace = useAppStore((state) => state.moveWorkspace);
 
   const [menu, setMenu] = useState<{
     workspaceId: string;
@@ -38,6 +43,7 @@ export function WorkspaceBar({
     value: string;
   } | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const openMenu = useCallback(
     (
@@ -76,7 +82,6 @@ export function WorkspaceBar({
         },
       ]
     : [];
-
   return (
     <>
       <div className="workspace-bar">
@@ -95,6 +100,7 @@ export function WorkspaceBar({
               >
                 <input
                   className="workspace-inline-input"
+                  size={Math.min(34, Math.max(8, rename.value.length + 1))}
                   autoFocus
                   value={rename.value}
                   aria-label="Workspace name"
@@ -123,9 +129,11 @@ export function WorkspaceBar({
               <button
                 className={`workspace-pill ${
                   workspace.id === activeWorkspaceId ? "active" : ""
-                }`}
+                } ${dragOverId === workspace.id ? "drag-target" : ""}`}
                 type="button"
                 key={workspace.id}
+                draggable
+                data-workspace-id={workspace.id}
                 onClick={() => setActiveWorkspace(workspace.id)}
                 onDoubleClick={() =>
                   setRename({
@@ -134,7 +142,41 @@ export function WorkspaceBar({
                   })
                 }
                 onContextMenu={(event) => openMenu(event, workspace.id)}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData(
+                    "application/x-fz-workspace",
+                    workspace.id,
+                  );
+                }}
+                onDragEnd={() => setDragOverId(null)}
+                onDragOver={(event) => {
+                  if (
+                    !event.dataTransfer.types.includes(
+                      "application/x-fz-workspace",
+                    )
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDragOverId(workspace.id);
+                }}
+                onDragLeave={() =>
+                  setDragOverId((current) =>
+                    current === workspace.id ? null : current,
+                  )
+                }
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = event.dataTransfer.getData(
+                    "application/x-fz-workspace",
+                  );
+                  if (sourceId) moveWorkspace(sourceId, workspace.id);
+                  setDragOverId(null);
+                }}
               >
+                <span className="workspace-status" aria-hidden="true" />
                 <span>{workspace.name}</span>
                 <span
                   className="pill-menu"
@@ -166,8 +208,15 @@ export function WorkspaceBar({
             <Plus size={14} />
           </button>
         </div>
-        <div className="workspace-count">
-          {workspaces.length} workspace{workspaces.length === 1 ? "" : "s"}
+        <div
+          className={`workspace-brand ${compactBrand ? "compact" : ""}`}
+          title={`FZ Terminal BETA ${packageInfo.version}`}
+        >
+          <img src={brandIcon} alt="" aria-hidden="true" />
+          <span className="workspace-brand-copy">
+            <strong>FZ Terminal</strong>
+            <small>BETA · {packageInfo.version}</small>
+          </span>
         </div>
       </div>
 

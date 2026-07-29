@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CopyPlus,
   Edit3,
@@ -24,23 +24,28 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 
 interface TabBarProps {
   workspace: Workspace;
+  showActions?: boolean;
   onNewTab: (kind: TabKind) => void;
   onCloseTab: (tab: TerminalTab) => void;
   onDuplicateTab: (tab: TerminalTab) => void;
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
+  onOverflowChange?: (overflowing: boolean) => void;
 }
 
 export function TabBar({
   workspace,
+  showActions = true,
   onNewTab,
   onCloseTab,
   onDuplicateTab,
   onSplitHorizontal,
   onSplitVertical,
+  onOverflowChange,
 }: TabBarProps) {
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const renameTab = useAppStore((state) => state.renameTab);
+  const moveTab = useAppStore((state) => state.moveTab);
   const [rename, setRename] = useState<{
     tabId: string;
     value: string;
@@ -51,6 +56,8 @@ export function TabBar({
     y: number;
   } | null>(null);
   const [newTabMenu, setNewTabMenu] = useState<MenuPosition | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const tabListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const beginInlineRename = (event: Event) => {
@@ -62,6 +69,49 @@ export function TabBar({
     return () =>
       window.removeEventListener("fz:rename-tab", beginInlineRename);
   }, [workspace.tabs]);
+
+  useEffect(() => {
+    const list = tabListRef.current;
+    if (!list) return;
+    const updateOverflow = () => {
+      onOverflowChange?.(list.scrollWidth > list.clientWidth + 1);
+    };
+    const scrollWithWheel = (event: WheelEvent) => {
+      if (list.scrollWidth <= list.clientWidth + 1) return;
+      const delta =
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+          ? event.deltaX
+          : event.deltaY;
+      if (!delta) return;
+      event.preventDefault();
+      list.scrollLeft += delta;
+    };
+    const observer = new ResizeObserver(updateOverflow);
+    observer.observe(list);
+    list.addEventListener("wheel", scrollWithWheel, { passive: false });
+    const frame = requestAnimationFrame(updateOverflow);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      list.removeEventListener("wheel", scrollWithWheel);
+    };
+  }, [onOverflowChange, workspace.tabs.length]);
+
+  useEffect(() => {
+    const list = tabListRef.current;
+    const activeTab = [...(list?.children ?? [])].find(
+      (item) =>
+        item instanceof HTMLElement &&
+        item.dataset.tabId === workspace.activeTabId,
+    );
+    if (activeTab instanceof HTMLElement) {
+      activeTab.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
+    }
+  }, [workspace.activeTabId]);
 
   const commitRename = (tabId: string, value: string) => {
     if (value.trim()) renameTab(workspace.id, tabId, value);
@@ -118,22 +168,64 @@ export function TabBar({
   return (
     <>
       <div className="tab-bar">
-        <div className="tab-list">
+        <div
+          className="tab-list"
+          ref={tabListRef}
+          aria-label="Workspace sessions"
+        >
           {workspace.tabs.map((tab) => {
             const active = tab.id === workspace.activeTabId;
             const TabIcon = tabIcons[tab.kind];
             return (
               <div
-                className={`tab ${active ? "active" : ""}`}
+                className={`tab ${active ? "active" : ""} ${
+                  dragOverId === tab.id ? "drag-target" : ""
+                }`}
                 key={tab.id}
+                draggable={rename?.tabId !== tab.id}
                 data-tab-kind={tab.kind}
+                data-tab-id={tab.id}
                 onContextMenu={(event) => openMenu(event, tab.id)}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData(
+                    "application/x-fz-tab",
+                    tab.id,
+                  );
+                }}
+                onDragEnd={() => setDragOverId(null)}
+                onDragOver={(event) => {
+                  if (
+                    !event.dataTransfer.types.includes(
+                      "application/x-fz-tab",
+                    )
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDragOverId(tab.id);
+                }}
+                onDragLeave={() =>
+                  setDragOverId((current) =>
+                    current === tab.id ? null : current,
+                  )
+                }
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = event.dataTransfer.getData(
+                    "application/x-fz-tab",
+                  );
+                  if (sourceId) moveTab(workspace.id, sourceId, tab.id);
+                  setDragOverId(null);
+                }}
               >
                 {rename?.tabId === tab.id ? (
                   <div className="tab-main editing">
                     <TabIcon className="tab-kind-icon" size={12} />
                     <input
                       className="tab-inline-input"
+                      size={Math.min(34, Math.max(8, rename.value.length + 1))}
                       autoFocus
                       value={rename.value}
                       aria-label="Tab name"
@@ -202,30 +294,32 @@ export function TabBar({
             <Plus size={14} />
           </button>
         </div>
-        <div className="tab-actions">
-          <button
-            className="toolbar-button with-label"
-            type="button"
-            disabled={workspace.tabs.find(
-              (tab) => tab.id === workspace.activeTabId,
-            )?.kind !== "terminal"}
-            onClick={onSplitHorizontal}
-          >
-            <SplitSquareHorizontal size={13} />
-            <span>Split</span>
-          </button>
-          <button
-            className="toolbar-button"
-            type="button"
-            title="Split top / bottom"
-            disabled={workspace.tabs.find(
-              (tab) => tab.id === workspace.activeTabId,
-            )?.kind !== "terminal"}
-            onClick={onSplitVertical}
-          >
-            <SplitSquareVertical size={13} />
-          </button>
-        </div>
+        {showActions && (
+          <div className="tab-actions">
+            <button
+              className="toolbar-button with-label"
+              type="button"
+              disabled={workspace.tabs.find(
+                (tab) => tab.id === workspace.activeTabId,
+              )?.kind !== "terminal"}
+              onClick={onSplitHorizontal}
+            >
+              <SplitSquareHorizontal size={13} />
+              <span>Split</span>
+            </button>
+            <button
+              className="toolbar-button"
+              type="button"
+              title="Split top / bottom"
+              disabled={workspace.tabs.find(
+                (tab) => tab.id === workspace.activeTabId,
+              )?.kind !== "terminal"}
+              onClick={onSplitVertical}
+            >
+              <SplitSquareVertical size={13} />
+            </button>
+          </div>
+        )}
       </div>
 
       <ContextMenu

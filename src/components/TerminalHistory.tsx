@@ -172,6 +172,7 @@ export function TerminalHistory({
               <Search size={13} />
               <input
                 autoFocus
+                size={Math.min(48, Math.max(18, query.length + 2))}
                 value={query}
                 spellCheck={false}
                 placeholder="Exact search in selected block…"

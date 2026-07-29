@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import type {
   ShortcutAction,
   TabKind,
@@ -8,15 +8,17 @@ import type {
   TerminalTab,
   Workspace,
 } from "./types";
-import { applyTheme, themes } from "./lib/themes";
+import { applyTheme, resolveTheme } from "./lib/themes";
 import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import {
   collectSessionIds,
+  defaultSettings,
   useAppStore,
 } from "./store/appStore";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
+import { WorkspaceBar } from "./components/WorkspaceBar";
 import { SplitView } from "./components/SplitView";
 import {
   SettingsModal,
@@ -56,6 +58,7 @@ export function App() {
   const closeTab = useAppStore((state) => state.closeTab);
   const splitPane = useAppStore((state) => state.splitPane);
   const closePane = useAppStore((state) => state.closePane);
+  const setActivePane = useAppStore((state) => state.setActivePane);
 
   const [settingsModal, setSettingsModal] = useState<{
     open: boolean;
@@ -63,6 +66,7 @@ export function App() {
   }>({ open: false, section: "general" });
   const [pendingConfirmation, setPendingConfirmation] =
     useState<PendingConfirmation | null>(null);
+  const [tabsOverflowing, setTabsOverflowing] = useState(false);
   const updateStatus = useUpdateStatus();
 
   const activeWorkspace =
@@ -75,15 +79,25 @@ export function App() {
   const activePane = activeTab?.kind === "terminal"
     ? findPane(activeTab.root, activeTab.activePaneId)
     : null;
-  const theme = themes[settings.appearance.theme];
+  const theme = useMemo(
+    () => resolveTheme(settings.appearance),
+    [settings.appearance],
+  );
 
   useEffect(() => {
-    applyTheme(settings.appearance.theme);
+    applyTheme(theme, settings.appearance);
+  }, [settings.appearance, theme]);
+
+  useEffect(() => {
+    const rendererOpacity = navigator.userAgent.includes("Linux")
+      ? settings.appearance.interfaceOpacity
+      : 1;
     document.documentElement.style.setProperty(
-      "--ui-font-size",
-      `${settings.appearance.uiFontSize}px`,
+      "--window-opacity",
+      String(rendererOpacity),
     );
-  }, [settings.appearance.theme, settings.appearance.uiFontSize]);
+    window.fzTerminal.window.setOpacity(settings.appearance.interfaceOpacity);
+  }, [settings.appearance.interfaceOpacity]);
 
   useEffect(() => {
     if (
@@ -171,6 +185,12 @@ export function App() {
     },
     nextWorkspace: () => cycleWorkspace(1),
     previousWorkspace: () => cycleWorkspace(-1),
+    commandPalette: () => {
+      setSidebarVisible(true);
+      requestAnimationFrame(() =>
+        window.dispatchEvent(new Event("fz:focus-command-palette")),
+      );
+    },
     clearTerminal: () => {
       if (activePane) {
         window.fzTerminal.pty.write(activePane.sessionId, "\x0c");
@@ -185,6 +205,26 @@ export function App() {
         );
       }
     },
+    nextTab: () => cycleTab(1),
+    previousTab: () => cycleTab(-1),
+    activateTab: (index: number, last = false) => activateTab(index, last),
+    focusPane: (
+      direction: "left" | "right" | "up" | "down",
+    ) => focusPane(direction),
+    toggleMaximizePane: () => {
+      if (!activePane) return;
+      window.dispatchEvent(
+        new CustomEvent("fz:toggle-maximize-pane", {
+          detail: activePane.sessionId,
+        }),
+      );
+    },
+    zoomIn: () => adjustFontSize(1),
+    zoomOut: () => adjustFontSize(-1),
+    resetFontSize: () =>
+      useAppStore.getState().updateAppearance({
+        fontSize: defaultSettings.appearance.fontSize,
+      }),
   };
 
   const onGlobalKeyDown = useEffectEvent((event: KeyboardEvent) => {
@@ -202,14 +242,35 @@ export function App() {
 
     const actions: Record<ShortcutAction, () => void> = {
       newTab: handlers.newTab,
-      closeTab: handlers.closeCurrentTab,
+      closeTab: activePane
+        ? handlers.closeCurrentPane
+        : handlers.closeCurrentTab,
+      nextTab: handlers.nextTab,
+      previousTab: handlers.previousTab,
+      activateTab1: () => handlers.activateTab(0),
+      activateTab2: () => handlers.activateTab(1),
+      activateTab3: () => handlers.activateTab(2),
+      activateTab4: () => handlers.activateTab(3),
+      activateTab5: () => handlers.activateTab(4),
+      activateTab6: () => handlers.activateTab(5),
+      activateTab7: () => handlers.activateTab(6),
+      activateTab8: () => handlers.activateTab(7),
+      activateLastTab: () => handlers.activateTab(-1, true),
       newWorkspace: handlers.newWorkspace,
       nextWorkspace: handlers.nextWorkspace,
       previousWorkspace: handlers.previousWorkspace,
       splitHorizontal: handlers.splitHorizontal,
       splitVertical: handlers.splitVertical,
-      closePane: handlers.closeCurrentPane,
+      closePane: activePane
+        ? handlers.closeCurrentPane
+        : handlers.closeCurrentTab,
+      focusPaneLeft: () => handlers.focusPane("left"),
+      focusPaneRight: () => handlers.focusPane("right"),
+      focusPaneUp: () => handlers.focusPane("up"),
+      focusPaneDown: () => handlers.focusPane("down"),
+      toggleMaximizePane: handlers.toggleMaximizePane,
       toggleSidebar: handlers.toggleSidebar,
+      commandPalette: handlers.commandPalette,
       openSettings: handlers.openSettings,
       searchTerminal: handlers.searchTerminal,
       copyTerminal: handlers.copyTerminal,
@@ -218,6 +279,9 @@ export function App() {
       clearInput: handlers.clearInput,
       clearTerminal: handlers.clearTerminal,
       showCompletions: handlers.showCompletions,
+      zoomIn: handlers.zoomIn,
+      zoomOut: handlers.zoomOut,
+      resetFontSize: handlers.resetFontSize,
     };
 
     for (const [action, shortcut] of Object.entries(
@@ -247,6 +311,71 @@ export function App() {
         (index + delta + workspaces.length) % workspaces.length
       ];
     setActiveWorkspace(next.id);
+  }
+
+  function cycleTab(delta: number) {
+    if (!activeWorkspace || activeWorkspace.tabs.length < 2) return;
+    const index = activeWorkspace.tabs.findIndex(
+      (tab) => tab.id === activeWorkspace.activeTabId,
+    );
+    const next =
+      activeWorkspace.tabs[
+        (index + delta + activeWorkspace.tabs.length) %
+          activeWorkspace.tabs.length
+      ];
+    setActiveTab(activeWorkspace.id, next.id);
+  }
+
+  function activateTab(index: number, last = false) {
+    if (!activeWorkspace || activeWorkspace.tabs.length === 0) return;
+    const target = last
+      ? activeWorkspace.tabs.at(-1)
+      : activeWorkspace.tabs[index];
+    if (target) setActiveTab(activeWorkspace.id, target.id);
+  }
+
+  function focusPane(direction: "left" | "right" | "up" | "down") {
+    if (!activeWorkspace || !activeTab || !activePane) return;
+    const elements = [
+      ...document.querySelectorAll<HTMLElement>(
+        ".terminal-pane[data-pane-id]",
+      ),
+    ];
+    const current = elements.find(
+      (element) => element.dataset.paneId === activePane.id,
+    );
+    if (!current) return;
+    const origin = centerOf(current.getBoundingClientRect());
+    const horizontal = direction === "left" || direction === "right";
+    const sign = direction === "left" || direction === "up" ? -1 : 1;
+    const candidate = elements
+      .filter((element) => element !== current)
+      .map((element) => {
+        const center = centerOf(element.getBoundingClientRect());
+        const primary =
+          sign *
+          (horizontal ? center.x - origin.x : center.y - origin.y);
+        const secondary = Math.abs(
+          horizontal ? center.y - origin.y : center.x - origin.x,
+        );
+        return { element, primary, score: primary * 10 + secondary };
+      })
+      .filter(({ primary }) => primary > 1)
+      .sort((left, right) => left.score - right.score)[0];
+    const paneId = candidate?.element.dataset.paneId;
+    if (paneId) {
+      setActivePane(activeWorkspace.id, activeTab.id, paneId);
+      candidate.element.querySelector<HTMLElement>(".xterm-helper-textarea")
+        ?.focus();
+    }
+  }
+
+  function adjustFontSize(delta: number) {
+    const fontSize = Math.min(
+      30,
+      Math.max(9, settings.appearance.fontSize + delta),
+    );
+    useAppStore.getState().updateAppearance({ fontSize });
   }
 
   function splitActive(direction: SplitDirection) {
@@ -320,12 +449,24 @@ export function App() {
     return pane ? { sessionId: pane.sessionId, delay } : null;
   }
 
-  function openPathInTerminal(path: string, directory: boolean) {
+  function openPathInTerminal(
+    path: string,
+    directory: boolean,
+    action: "cat" | "nano" | "less" | "grep" = "cat",
+    pattern = "",
+  ) {
     const target = getTerminalTarget();
     if (!target) return;
+    const quotedPath = quoteShell(path);
     const command = directory
-      ? `cd -- ${quoteShell(path)}`
-      : `\${VISUAL:-\${EDITOR:-nano}} -- ${quoteShell(path)}`;
+      ? `cd -- ${quotedPath}`
+      : action === "nano"
+        ? `nano -- ${quotedPath}`
+        : action === "less"
+          ? `less -- ${quotedPath}`
+          : action === "grep"
+            ? `grep --color=always -n -- ${quoteShell(pattern)} ${quotedPath}`
+            : `cat -- ${quotedPath}`;
     window.setTimeout(() => {
       window.dispatchEvent(
         new CustomEvent("fz:quick-command", {
@@ -348,6 +489,7 @@ export function App() {
 
   function performCloseTab(workspace: Workspace, tab: TerminalTab) {
     if (tab.kind === "terminal") killSessions(tab.root);
+    if (tab.kind === "browser") window.fzTerminal.browser.destroy(tab.id);
     closeTab(workspace.id, tab.id);
   }
 
@@ -404,6 +546,7 @@ export function App() {
     if (!workspace) return;
     for (const tab of workspace.tabs) {
       if (tab.kind === "terminal") killSessions(tab.root);
+      if (tab.kind === "browser") window.fzTerminal.browser.destroy(tab.id);
     }
     closeWorkspace(workspaceId);
   }
@@ -422,32 +565,28 @@ export function App() {
         sidebarVisible={sidebarVisible}
         terminalActive={activeTab.kind === "terminal"}
         onToggleSidebar={handlers.toggleSidebar}
-        onNewWorkspace={handlers.newWorkspace}
-        onCloseWorkspace={performCloseWorkspace}
+        onSplitHorizontal={handlers.splitHorizontal}
         onOpenSettings={handlers.openSettings}
         onOpenUpdates={() =>
           setSettingsModal({ open: true, section: "updates" })
         }
         onSearchTerminal={handlers.searchTerminal}
         updateStatus={updateStatus}
-      />
+      >
+        <TabBar
+          workspace={activeWorkspace}
+          showActions={false}
+          onNewTab={addNewTab}
+          onCloseTab={(tab) => requestCloseTab(activeWorkspace, tab)}
+          onDuplicateTab={duplicateTab}
+          onSplitHorizontal={handlers.splitHorizontal}
+          onSplitVertical={handlers.splitVertical}
+          onOverflowChange={setTabsOverflowing}
+        />
+      </TitleBar>
 
       <div className="app-content">
-        {sidebarVisible && (
-          <Sidebar
-            onRunCommand={runCommand}
-            onOpenSettings={handlers.openSettings}
-          />
-        )}
         <main className="terminal-workspace">
-          <TabBar
-            workspace={activeWorkspace}
-            onNewTab={addNewTab}
-            onCloseTab={(tab) => requestCloseTab(activeWorkspace, tab)}
-            onDuplicateTab={duplicateTab}
-            onSplitHorizontal={handlers.splitHorizontal}
-            onSplitVertical={handlers.splitVertical}
-          />
           <div className="terminal-stage">
             {activeTab.kind === "terminal" && (
               <SplitView
@@ -476,7 +615,7 @@ export function App() {
               <BrowserPane
                 id={activeTab.id}
                 initialUrl={
-                  activeTab.browserUrl ?? "https://duckduckgo.com/"
+                  activeTab.browserUrl ?? "https://www.google.com/"
                 }
                 visible={!settingsModal.open && !pendingConfirmation}
                 onUrlChange={(browserUrl) =>
@@ -497,6 +636,7 @@ export function App() {
             )}
             {activeTab.kind === "note" && (
               <NotePane
+                key={activeTab.id}
                 initialContent={activeTab.noteContent ?? ""}
                 onChange={(noteContent) =>
                   updateTab(activeWorkspace.id, activeTab.id, {
@@ -507,6 +647,21 @@ export function App() {
             )}
           </div>
         </main>
+        {sidebarVisible && (
+          <Sidebar
+            onRunCommand={runCommand}
+            onOpenSettings={handlers.openSettings}
+            onClose={handlers.toggleSidebar}
+          />
+        )}
+      </div>
+
+      <div className="workspace-dock">
+        <WorkspaceBar
+          compactBrand={tabsOverflowing}
+          onNewWorkspace={handlers.newWorkspace}
+          onCloseWorkspace={performCloseWorkspace}
+        />
       </div>
 
       {settingsModal.open && (
@@ -542,6 +697,13 @@ function findPane(
 
 function quoteShell(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function centerOf(rect: DOMRect) {
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
 }
 
 function matchesShortcut(event: KeyboardEvent, shortcut: string) {

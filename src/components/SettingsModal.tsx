@@ -10,21 +10,26 @@ import {
   HardDrive,
   Keyboard,
   LoaderCircle,
+  Palette,
   RefreshCw,
   RotateCcw,
   Settings2,
   TerminalSquare,
 } from "lucide-react";
 import type {
+  CustomPalette,
   CursorStyle,
-  FontId,
   ProfileInfo,
   ShortcutAction,
   ThemeId,
 } from "../types";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
-import { fonts, themes } from "../lib/themes";
-import { shortcutLabels, useAppStore } from "../store/appStore";
+import { fonts, paletteFromTheme, themes } from "../lib/themes";
+import {
+  defaultSettings,
+  shortcutLabels,
+  useAppStore,
+} from "../store/appStore";
 import { Modal } from "./Modal";
 import { Toggle } from "./Toggle";
 
@@ -56,6 +61,55 @@ const sections: {
   { id: "updates", label: "Updates", icon: RefreshCw },
 ];
 
+const paletteGroups: {
+  label: string;
+  colors: { key: keyof CustomPalette; label: string }[];
+}[] = [
+  {
+    label: "Interface surfaces",
+    colors: [
+      { key: "app", label: "Window" },
+      { key: "titlebar", label: "Title bar" },
+      { key: "sidebar", label: "Command panel" },
+      { key: "surface", label: "Panels" },
+      { key: "elevated", label: "Raised panels" },
+      { key: "hover", label: "Hover" },
+      { key: "border", label: "Borders" },
+      { key: "borderStrong", label: "Strong borders" },
+    ],
+  },
+  {
+    label: "Interface text & signals",
+    colors: [
+      { key: "text", label: "Primary text" },
+      { key: "textMuted", label: "Secondary text" },
+      { key: "textFaint", label: "Inactive text" },
+      { key: "accent", label: "Accent" },
+      { key: "accentHover", label: "Accent hover" },
+      { key: "success", label: "Success" },
+      { key: "warning", label: "Warning" },
+      { key: "danger", label: "Error" },
+    ],
+  },
+  {
+    label: "Terminal & ANSI",
+    colors: [
+      { key: "terminalBackground", label: "Background" },
+      { key: "terminalForeground", label: "Foreground" },
+      { key: "terminalCursor", label: "Cursor" },
+      { key: "terminalSelection", label: "Selection" },
+      { key: "ansiBlack", label: "ANSI black" },
+      { key: "ansiRed", label: "ANSI red" },
+      { key: "ansiGreen", label: "ANSI green" },
+      { key: "ansiYellow", label: "ANSI yellow" },
+      { key: "ansiBlue", label: "ANSI blue" },
+      { key: "ansiMagenta", label: "ANSI magenta" },
+      { key: "ansiCyan", label: "ANSI cyan" },
+      { key: "ansiWhite", label: "ANSI white" },
+    ],
+  },
+];
+
 export function SettingsModal({
   open,
   initialSection = "general",
@@ -64,6 +118,10 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection);
   const [profileInfo, setProfileInfo] = useState<ProfileInfo | null>(null);
+  const [systemFonts, setSystemFonts] = useState<string[]>(() => [
+    "system-ui",
+    ...Object.values(fonts).map((font) => font.label),
+  ]);
   const updateStatus = useUpdateStatus();
   const settings = useAppStore((state) => state.settings);
   const commandGroups = useAppStore((state) => state.commandGroups);
@@ -84,12 +142,30 @@ export function SettingsModal({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open || section !== "appearance") return;
+    let active = true;
+    void window.fzTerminal.fonts.list().then((available) => {
+      if (!active) return;
+      setSystemFonts([
+        "system-ui",
+        ...new Set([
+          ...Object.values(fonts).map((font) => font.label),
+          ...available,
+        ]),
+      ]);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open, section]);
+
   return (
     <Modal
       open={open}
       title="Settings"
       subtitle="Personalize the terminal without leaving this window."
-      width={860}
+      width={980}
       onClose={onClose}
     >
       <div className="settings-layout">
@@ -155,7 +231,19 @@ export function SettingsModal({
             <SettingsPage
               eyebrow="Visual style"
               title="Appearance"
-              description="Themes affect both the app chrome and ANSI terminal colors."
+              description="Every change is previewed immediately and saved locally."
+              action={
+                <button
+                  className="button secondary small"
+                  type="button"
+                  onClick={() =>
+                    updateAppearance(defaultSettings.appearance)
+                  }
+                >
+                  <RotateCcw size={13} />
+                  Reset appearance
+                </button>
+              }
             >
               <SettingsGroup title="Theme">
                 <div className="theme-grid">
@@ -166,9 +254,15 @@ export function SettingsModal({
                       }`}
                       type="button"
                       key={theme.id}
-                      onClick={() =>
-                        updateAppearance({ theme: theme.id as ThemeId })
-                      }
+                      onClick={() => {
+                        const themeId = theme.id as ThemeId;
+                        updateAppearance({
+                          theme: themeId,
+                          ...(settings.appearance.advancedColors
+                            ? { customPalette: paletteFromTheme(theme) }
+                            : {}),
+                        });
+                      }}
                     >
                       <span className="theme-preview">
                         {theme.swatches.map((color) => (
@@ -185,14 +279,35 @@ export function SettingsModal({
                 </div>
               </SettingsGroup>
               <SettingsGroup title="Typography">
+                <SettingRow label="Interface font">
+                  <FontFamilyPicker
+                    id="ui-font-family"
+                    value={settings.appearance.uiFontFamily}
+                    fonts={systemFonts}
+                    onChange={(uiFontFamily) =>
+                      updateAppearance({ uiFontFamily })
+                    }
+                  />
+                </SettingRow>
+                <SettingRow label="Terminal font">
+                  <FontFamilyPicker
+                    id="terminal-font-family"
+                    value={settings.appearance.terminalFontFamily}
+                    fonts={systemFonts}
+                    onChange={(terminalFontFamily) =>
+                      updateAppearance({ terminalFontFamily })
+                    }
+                    monospace
+                  />
+                </SettingRow>
                 <SettingRow
-                  label="Interface text"
+                  label="Interface text size"
                   value={`${settings.appearance.uiFontSize}px`}
                 >
                   <input
                     type="range"
-                    min={9}
-                    max={16}
+                    min={11}
+                    max={20}
                     step={1}
                     value={settings.appearance.uiFontSize}
                     onChange={(event) =>
@@ -202,24 +317,8 @@ export function SettingsModal({
                     }
                   />
                 </SettingRow>
-                <SettingRow label="Font family">
-                  <select
-                    value={settings.appearance.font}
-                    onChange={(event) =>
-                      updateAppearance({
-                        font: event.target.value as FontId,
-                      })
-                    }
-                  >
-                    {Object.entries(fonts).map(([id, font]) => (
-                      <option value={id} key={id}>
-                        {font.label}
-                      </option>
-                    ))}
-                  </select>
-                </SettingRow>
                 <SettingRow
-                  label="Font size"
+                  label="Terminal font size"
                   value={`${settings.appearance.fontSize}px`}
                 >
                   <input
@@ -252,15 +351,36 @@ export function SettingsModal({
                     }
                   />
                 </SettingRow>
+              </SettingsGroup>
+              <SettingsGroup title="Transparency & surfaces">
                 <SettingRow
-                  label="Terminal opacity"
+                  label="Interface opacity"
+                  value={`${Math.round(
+                    settings.appearance.interfaceOpacity * 100,
+                  )}%`}
+                >
+                  <input
+                    type="range"
+                    min={0.2}
+                    max={1}
+                    step={0.01}
+                    value={settings.appearance.interfaceOpacity}
+                    onChange={(event) =>
+                      updateAppearance({
+                        interfaceOpacity: Number(event.target.value),
+                      })
+                    }
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Terminal background opacity"
                   value={`${Math.round(settings.appearance.opacity * 100)}%`}
                 >
                   <input
                     type="range"
-                    min={0.7}
+                    min={0.05}
                     max={1}
-                    step={0.02}
+                    step={0.01}
                     value={settings.appearance.opacity}
                     onChange={(event) =>
                       updateAppearance({
@@ -269,6 +389,143 @@ export function SettingsModal({
                     }
                   />
                 </SettingRow>
+                <SettingRow
+                  label="Surface blur"
+                  value={`${settings.appearance.interfaceBlur}px`}
+                >
+                  <input
+                    type="range"
+                    min={0}
+                    max={36}
+                    step={1}
+                    value={settings.appearance.interfaceBlur}
+                    onChange={(event) =>
+                      updateAppearance({
+                        interfaceBlur: Number(event.target.value),
+                      })
+                    }
+                  />
+                </SettingRow>
+              </SettingsGroup>
+              <SettingsGroup title="Geometry & readability">
+                <SettingRow
+                  label="Corner radius"
+                  value={`${settings.appearance.cornerRadius}px`}
+                >
+                  <input
+                    type="range"
+                    min={0}
+                    max={16}
+                    step={1}
+                    value={settings.appearance.cornerRadius}
+                    onChange={(event) =>
+                      updateAppearance({
+                        cornerRadius: Number(event.target.value),
+                      })
+                    }
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Panel spacing"
+                  value={`${settings.appearance.panelGap}px`}
+                >
+                  <input
+                    type="range"
+                    min={0}
+                    max={14}
+                    step={1}
+                    value={settings.appearance.panelGap}
+                    onChange={(event) =>
+                      updateAppearance({
+                        panelGap: Number(event.target.value),
+                      })
+                    }
+                  />
+                </SettingRow>
+                <Toggle
+                  checked={settings.appearance.highContrastText}
+                  onChange={(highContrastText) =>
+                    updateAppearance({ highContrastText })
+                  }
+                  label="High-contrast secondary text"
+                  description="Makes captions, timestamps, shortcuts, and inactive labels easier to read."
+                />
+                <Toggle
+                  checked={settings.appearance.showBackgroundGrid}
+                  onChange={(showBackgroundGrid) =>
+                    updateAppearance({ showBackgroundGrid })
+                  }
+                  label="Technical background grid"
+                  description="Show the subtle grid behind terminal panels."
+                />
+              </SettingsGroup>
+              <SettingsGroup title="Advanced palette">
+                <Toggle
+                  checked={settings.appearance.advancedColors}
+                  onChange={(advancedColors) =>
+                    updateAppearance({ advancedColors })
+                  }
+                  label="Advanced color mode"
+                  description="Tune every semantic interface and terminal color independently."
+                />
+                {settings.appearance.advancedColors && (
+                  <div className="advanced-palette">
+                    <div className="palette-toolbar">
+                      <span>
+                        <Palette size={15} />
+                        Changes are applied live
+                      </span>
+                      <button
+                        className="button secondary small"
+                        type="button"
+                        onClick={() =>
+                          updateAppearance({
+                            customPalette: paletteFromTheme(
+                              themes[settings.appearance.theme],
+                            ),
+                          })
+                        }
+                      >
+                        <RotateCcw size={12} />
+                        Load theme colors
+                      </button>
+                    </div>
+                    {paletteGroups.map((group) => (
+                      <section className="palette-section" key={group.label}>
+                        <h5>{group.label}</h5>
+                        <div className="palette-grid">
+                          {group.colors.map((color) => (
+                            <label className="palette-color" key={color.key}>
+                              <input
+                                type="color"
+                                value={
+                                  settings.appearance.customPalette[color.key]
+                                }
+                                aria-label={color.label}
+                                onChange={(event) =>
+                                  updateAppearance({
+                                    customPalette: {
+                                      ...settings.appearance.customPalette,
+                                      [color.key]: event.target.value,
+                                    },
+                                  })
+                                }
+                              />
+                              <span>
+                                <strong>{color.label}</strong>
+                                <code>
+                                  {settings.appearance.customPalette[
+                                    color.key
+                                  ].toUpperCase()}
+                                </code>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                )}
               </SettingsGroup>
             </SettingsPage>
           )}
@@ -340,6 +597,7 @@ export function SettingsModal({
                     updateTerminal({ copyOnSelect })
                   }
                   label="Copy text when selected"
+                  description="Mouse selections and Ctrl+A selections are copied to the clipboard immediately."
                 />
               </SettingsGroup>
               <SettingsGroup title="Search highlighting">
@@ -390,7 +648,7 @@ export function SettingsModal({
                     updateTerminal({ screenScrollMode })
                   }
                   label="GNU Screen wheel mode"
-                  description="Use the mouse wheel to enter Screen copy mode and scroll its history. You can override this for one pane from its right-click menu."
+                  description="When enabled, detected GNU Screen sessions automatically use the mouse wheel for copy-mode history. When disabled, no automatic Screen behavior is applied."
                 />
               </SettingsGroup>
               <SettingsGroup title="Color behavior">
@@ -400,7 +658,8 @@ export function SettingsModal({
                     <strong>Truecolor and semantic ANSI colors are enabled</strong>
                     <p>
                       Errors, warnings, success messages, Git output, and
-                      full-screen apps keep their original 24-bit colors.
+                      full-screen apps use the selected theme’s ANSI palette.
+                      System color-emoji fonts are used as a fallback.
                     </p>
                   </div>
                 </div>
@@ -654,6 +913,44 @@ function SettingRow({
       </span>
       {children}
     </label>
+  );
+}
+
+function FontFamilyPicker({
+  id,
+  value,
+  fonts,
+  monospace = false,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  fonts: string[];
+  monospace?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="font-family-picker">
+      <input
+        list={`${id}-options`}
+        value={value}
+        spellCheck={false}
+        aria-label={monospace ? "Terminal font family" : "Interface font family"}
+        style={{
+          fontFamily:
+            value === "system-ui"
+              ? "system-ui"
+              : `"${value}", ${monospace ? "monospace" : "sans-serif"}`,
+        }}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <datalist id={`${id}-options`}>
+        {fonts.map((font) => (
+          <option value={font} key={font} />
+        ))}
+      </datalist>
+      <small>{fonts.length - 1} installed fonts detected</small>
+    </div>
   );
 }
 

@@ -68,7 +68,7 @@ export function BrowserPane({
       cancelAnimationFrame(frame);
       observer.disconnect();
       stopState();
-      window.fzTerminal.browser.destroy(id);
+      window.fzTerminal.browser.setVisible(id, false);
     };
   }, [id]);
 
@@ -130,6 +130,7 @@ export function BrowserPane({
         >
           <Globe2 size={13} />
           <input
+            size={Math.min(96, Math.max(18, address.length + 1))}
             value={address}
             spellCheck={false}
             aria-label="Browser address"

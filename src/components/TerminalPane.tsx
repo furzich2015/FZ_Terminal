@@ -38,7 +38,7 @@ import type {
   SplitNode,
   ThemeDefinition,
 } from "../types";
-import { fonts } from "../lib/themes";
+import { buildFontStack } from "../lib/themes";
 import { useAppStore } from "../store/appStore";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
@@ -56,13 +56,22 @@ interface CompletionPopup {
   y: number;
 }
 
+interface InlineSuggestionPosition {
+  left: number;
+  top: number;
+  lineHeight: number;
+  maxWidth: number;
+}
+
 const COMMAND_BLOCK_OUTPUT_LIMIT = 2_000_000;
 const COMMAND_BLOCK_FLUSH_THRESHOLD = 256_000;
 const STORED_COMMAND_OUTPUT_LIMIT = 3_000_000;
+const COMMAND_HISTORY_LIMIT = 250;
 
 interface TerminalPaneProps {
   pane: SplitNode & { type: "pane" };
   active: boolean;
+  minimalChrome: boolean;
   settings: AppSettings;
   theme: ThemeDefinition;
   commandGroups: CommandGroup[];
@@ -76,6 +85,7 @@ interface TerminalPaneProps {
 export function TerminalPane({
   pane,
   active,
+  minimalChrome,
   settings,
   theme,
   commandGroups,
@@ -96,6 +106,9 @@ export function TerminalPane({
   const screenScrollEnabledRef = useRef(settings.terminal.screenScrollMode);
   const screenCopyModeRef = useRef(false);
   const inputBufferRef = useRef("");
+  const commandGroupsRef = useRef(commandGroups);
+  const commandHistoryRef = useRef(loadCommandHistory());
+  const commandSuggestionsRef = useRef<string[]>([]);
   const activeBlockIdRef = useRef<string | null>(null);
   const pendingOutputRef = useRef("");
   const historyFlushTimerRef = useRef<number | null>(null);
@@ -103,6 +116,9 @@ export function TerminalPane({
   const requestCompletionRef = useRef<() => void>(() => undefined);
   const pasteTextRef = useRef<(text: string) => void>(() => undefined);
   const recordCommandRef = useRef<(command: string) => void>(
+    () => undefined,
+  );
+  const positionCommandSuggestionRef = useRef<() => void>(
     () => undefined,
   );
   const remoteSessionRef = useRef(false);
@@ -125,12 +141,17 @@ export function TerminalPane({
     count: 0,
   });
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const [historyTargetId, setHistoryTargetId] = useState<string | null>(null);
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>(() =>
     loadCommandBlocks(pane.sessionId),
   );
   const commandBlocksRef = useRef(commandBlocks);
   const [completion, setCompletion] = useState<CompletionPopup | null>(null);
+  const [commandSuggestions, setCommandSuggestions] = useState<string[]>([]);
+  const [suggestionSuffix, setSuggestionSuffix] = useState("");
+  const [suggestionPosition, setSuggestionPosition] =
+    useState<InlineSuggestionPosition | null>(null);
   const [completionSearch, setCompletionSearch] = useState("");
   const [completionNotice, setCompletionNotice] = useState<string | null>(
     null,
@@ -140,13 +161,21 @@ export function TerminalPane({
   const [fontNotice, setFontNotice] = useState<number | null>(null);
   const screenScrollEnabled =
     screenScrollOverride ??
-    (settings.terminal.screenScrollMode || screenDetected);
+    (settings.terminal.screenScrollMode && screenDetected);
 
   useEffect(() => {
     settingsRef.current = settings;
     themeRef.current = theme;
+    commandGroupsRef.current = commandGroups;
     screenScrollEnabledRef.current = screenScrollEnabled;
-  }, [screenScrollEnabled, settings, theme]);
+  }, [commandGroups, screenScrollEnabled, settings, theme]);
+
+  useEffect(() => {
+    if (screenScrollEnabled || !screenCopyModeRef.current) return;
+    window.fzTerminal.pty.write(pane.sessionId, "\x1b");
+    screenCopyModeRef.current = false;
+    setScreenCopyActive(false);
+  }, [pane.sessionId, screenScrollEnabled]);
 
   useEffect(() => {
     const openSearch = (event: Event) => {
@@ -161,7 +190,13 @@ export function TerminalPane({
     };
     const clearInput = (event: Event) => {
       const sessionId = (event as CustomEvent<string>).detail;
-      if (sessionId === pane.sessionId) inputBufferRef.current = "";
+      if (sessionId === pane.sessionId) {
+        inputBufferRef.current = "";
+        commandSuggestionsRef.current = [];
+        setCommandSuggestions([]);
+        setSuggestionSuffix("");
+        setSuggestionPosition(null);
+      }
     };
     const showCompletions = (event: Event) => {
       const sessionId = (event as CustomEvent<string>).detail;
@@ -177,6 +212,10 @@ export function TerminalPane({
       ).detail;
       if (detail.sessionId !== pane.sessionId) return;
       inputBufferRef.current = detail.command;
+      commandSuggestionsRef.current = [];
+      setCommandSuggestions([]);
+      setSuggestionSuffix("");
+      setSuggestionPosition(null);
       if (detail.execute) {
         recordCommandRef.current(detail.command);
         inputBufferRef.current = "";
@@ -189,7 +228,7 @@ export function TerminalPane({
       if (sessionId !== pane.sessionId) return;
       const terminal = terminalRef.current;
       if (terminal?.hasSelection()) {
-        window.fzTerminal.clipboard.writeText(terminal.getSelection());
+        void window.fzTerminal.clipboard.writeText(terminal.getSelection());
       }
       terminal?.focus();
     };
@@ -217,6 +256,27 @@ export function TerminalPane({
   }, [pane.sessionId]);
 
   useEffect(() => {
+    const toggleMaximize = (event: Event) => {
+      const sessionId = (event as CustomEvent<string>).detail;
+      if (sessionId === pane.sessionId) {
+        setMaximized((current) => !current);
+      } else {
+        setMaximized(false);
+      }
+    };
+    window.addEventListener("fz:toggle-maximize-pane", toggleMaximize);
+    return () =>
+      window.removeEventListener("fz:toggle-maximize-pane", toggleMaximize);
+  }, [pane.sessionId]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      fitTerminalRef.current();
+      positionCommandSuggestionRef.current();
+    });
+  }, [historyOpen, maximized]);
+
+  useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let disposed = false;
@@ -230,7 +290,10 @@ export function TerminalPane({
       convertEol: false,
       cursorBlink: initialSettings.terminal.cursorBlink,
       cursorStyle: initialSettings.terminal.cursorStyle,
-      fontFamily: fonts[initialSettings.appearance.font].css,
+      fontFamily: buildFontStack(
+        initialSettings.appearance.terminalFontFamily,
+        true,
+      ),
       fontSize: initialSettings.appearance.fontSize,
       lineHeight: initialSettings.appearance.lineHeight,
       scrollback: initialSettings.terminal.scrollback,
@@ -329,8 +392,96 @@ export function TerminalPane({
       };
       activeBlockIdRef.current = block.id;
       saveHistory([...commandBlocksRef.current, block].slice(-40));
+      commandHistoryRef.current = saveCommandHistory(
+        commandHistoryRef.current,
+        trimmed,
+      );
     };
     recordCommandRef.current = startCommandBlock;
+    const positionCommandSuggestion = () => {
+      if (commandSuggestionsRef.current.length === 0) {
+        setSuggestionPosition(null);
+        return;
+      }
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      const paneElement = host.closest<HTMLElement>(".terminal-pane");
+      if (!screen || !paneElement || terminal.cols < 1 || terminal.rows < 1) {
+        setSuggestionPosition(null);
+        return;
+      }
+      const screenRect = screen.getBoundingClientRect();
+      const paneRect = paneElement.getBoundingClientRect();
+      const cellWidth = screenRect.width / terminal.cols;
+      const cellHeight = screenRect.height / terminal.rows;
+      const left =
+        screenRect.left -
+        paneRect.left +
+        terminal.buffer.active.cursorX * cellWidth;
+      const top =
+        screenRect.top -
+        paneRect.top +
+        terminal.buffer.active.cursorY * cellHeight;
+      setSuggestionPosition({
+        left,
+        top,
+        lineHeight: cellHeight,
+        maxWidth: Math.max(40, screenRect.right - paneRect.left - left),
+      });
+    };
+    const scheduleSuggestionPosition = () => {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(positionCommandSuggestion),
+      );
+    };
+    positionCommandSuggestionRef.current = scheduleSuggestionPosition;
+    const updateCommandSuggestions = (input: string) => {
+      const query = input;
+      if (!query.trim() || /[\r\n]/.test(query)) {
+        commandSuggestionsRef.current = [];
+        setCommandSuggestions([]);
+        setSuggestionSuffix("");
+        setSuggestionPosition(null);
+        return;
+      }
+      const quickCommands = commandGroupsRef.current.flatMap((group) =>
+        group.commands.map((command) => command.command),
+      );
+      const sessionCommands = [...commandBlocksRef.current]
+        .reverse()
+        .map((block) => block.command);
+      const candidates = [
+        ...commandHistoryRef.current,
+        ...sessionCommands,
+        ...quickCommands,
+      ];
+      const unique = [...new Set(candidates)].filter(
+        (command) => command !== query && command.startsWith(query),
+      );
+      const next = unique.slice(0, 5);
+      commandSuggestionsRef.current = next;
+      setCommandSuggestions(next);
+      setSuggestionSuffix(next[0]?.slice(input.length) ?? "");
+      if (next.length > 0) {
+        positionCommandSuggestion();
+        scheduleSuggestionPosition();
+      }
+      else setSuggestionPosition(null);
+    };
+    const acceptCommandSuggestion = () => {
+      const suggestion = commandSuggestionsRef.current[0];
+      const input = inputBufferRef.current;
+      if (!suggestion || !suggestion.startsWith(input)) return false;
+      const suffix = suggestion.slice(input.length);
+      if (!suffix) return false;
+      window.fzTerminal.pty.write(pane.sessionId, suffix);
+      inputBufferRef.current = suggestion;
+      commandSuggestionsRef.current = [];
+      setCommandSuggestions([]);
+      setSuggestionSuffix("");
+      setSuggestionPosition(null);
+      terminal.focus();
+      return true;
+    };
     const trackInput = (data: string) => {
       if (data.startsWith("\x1b")) return;
       for (const character of data) {
@@ -358,6 +509,7 @@ export function TerminalPane({
           inputBufferRef.current += character;
         }
       }
+      updateCommandSuggestions(inputBufferRef.current);
     };
     const requestCompletion = async () => {
       if (!settingsRef.current.terminal.fileCompletion) return;
@@ -460,6 +612,12 @@ export function TerminalPane({
         screenCopyModeRef.current = false;
         setScreenCopyActive(false);
       }
+      if (
+        data === "\t" &&
+        acceptCommandSuggestion()
+      ) {
+        return;
+      }
       if (data === "\t" && settingsRef.current.terminal.fileCompletion) {
         if (remoteSessionRef.current) {
           setCompletion(null);
@@ -491,7 +649,7 @@ export function TerminalPane({
       const selected = terminal.hasSelection();
       setHasSelection(selected);
       if (settingsRef.current.terminal.copyOnSelect && selected) {
-        window.fzTerminal.clipboard.writeText(terminal.getSelection());
+        void window.fzTerminal.clipboard.writeText(terminal.getSelection());
       }
     });
 
@@ -503,9 +661,16 @@ export function TerminalPane({
         !event.altKey &&
         !event.shiftKey &&
         event.key.toLowerCase() === "a" &&
+        terminal.buffer.active.type === "normal" &&
         !screenDetectedRef.current
       ) {
-        selectCurrentInput(terminal, inputBufferRef.current);
+        const selection = selectCurrentInput(
+          terminal,
+          inputBufferRef.current,
+        );
+        if (selection && settingsRef.current.terminal.copyOnSelect) {
+          void window.fzTerminal.clipboard.writeText(selection);
+        }
         return false;
       }
       if (
@@ -551,14 +716,14 @@ export function TerminalPane({
 
     const stopData = window.fzTerminal.pty.onData((event) => {
       if (event.id !== pane.sessionId) return;
-      terminal.write(event.data);
+      terminal.write(event.data, scheduleSuggestionPosition);
       appendHistoryOutput(event.data);
     });
     const stopExit = window.fzTerminal.pty.onExit((event) => {
       if (event.id !== pane.sessionId) return;
       setExited(true);
       terminal.write(
-        `\r\n\x1b[38;2;255;107;112mProcess exited with code ${event.exitCode}\x1b[0m\r\n`,
+        `\r\n\x1b[31mProcess exited with code ${event.exitCode}\x1b[0m\r\n`,
       );
     });
 
@@ -587,6 +752,7 @@ export function TerminalPane({
           terminal.cols,
           terminal.rows,
         );
+        scheduleSuggestionPosition();
       } catch {
         // The pane can be hidden while changing tabs.
       }
@@ -699,6 +865,7 @@ export function TerminalPane({
       requestCompletionRef.current = () => undefined;
       pasteTextRef.current = () => undefined;
       recordCommandRef.current = () => undefined;
+      positionCommandSuggestionRef.current = () => undefined;
     };
   }, [pane.sessionId]);
 
@@ -706,7 +873,10 @@ export function TerminalPane({
     const terminal = terminalRef.current;
     if (!terminal) return;
     terminal.options.theme = theme.xterm;
-    terminal.options.fontFamily = fonts[settings.appearance.font].css;
+    terminal.options.fontFamily = buildFontStack(
+      settings.appearance.terminalFontFamily,
+      true,
+    );
     terminal.options.fontSize = settings.appearance.fontSize;
     terminal.options.lineHeight = settings.appearance.lineHeight;
     terminal.options.cursorBlink = settings.terminal.cursorBlink;
@@ -725,6 +895,10 @@ export function TerminalPane({
   const runCommand = (command: QuickCommand) => {
     const fastExecution = command.fastExecution ?? true;
     inputBufferRef.current = command.command;
+    commandSuggestionsRef.current = [];
+    setCommandSuggestions([]);
+    setSuggestionSuffix("");
+    setSuggestionPosition(null);
     if (fastExecution) {
       recordCommandRef.current(command.command);
       inputBufferRef.current = "";
@@ -799,7 +973,11 @@ export function TerminalPane({
       window.fzTerminal.pty.write(pane.sessionId, insertion);
       inputBufferRef.current += insertion;
     }
-    setCompletion(null);
+      setCompletion(null);
+      commandSuggestionsRef.current = [];
+      setCommandSuggestions([]);
+      setSuggestionSuffix("");
+      setSuggestionPosition(null);
     setCompletionSearch("");
     terminalRef.current?.focus();
   };
@@ -848,22 +1026,29 @@ export function TerminalPane({
         .toLowerCase()
         .includes(completionSearch.trim().toLowerCase()),
     ) ?? [];
+  const shortcutLabel = (value: string) =>
+    value
+      .replace(
+        "Primary",
+        navigator.userAgent.includes("Mac OS") ? "Cmd" : "Ctrl",
+      )
+      .replaceAll("+", " ");
 
   const items: ContextMenuItem[] = [
     {
       label: "Copy",
       icon: Copy,
-      shortcut: "Ctrl C",
+      shortcut: shortcutLabel(settings.shortcuts.copyTerminal),
       disabled: !hasSelection,
       action: () => {
         const selection = terminalRef.current?.getSelection();
-        if (selection) window.fzTerminal.clipboard.writeText(selection);
+        if (selection) void window.fzTerminal.clipboard.writeText(selection);
       },
     },
     {
       label: "Paste",
       icon: Clipboard,
-      shortcut: "Ctrl V",
+      shortcut: shortcutLabel(settings.shortcuts.pasteTerminal),
       action: () => {
         void window.fzTerminal.clipboard
           .readText()
@@ -873,7 +1058,7 @@ export function TerminalPane({
     {
       label: "Send interrupt",
       icon: X,
-      shortcut: "Ctrl Alt C",
+      shortcut: shortcutLabel(settings.shortcuts.sendInterrupt),
       action: () => {
         inputBufferRef.current = "";
         window.fzTerminal.pty.write(pane.sessionId, "\x03");
@@ -890,7 +1075,7 @@ export function TerminalPane({
     {
       label: "Search terminal",
       icon: Search,
-      shortcut: "Ctrl F",
+      shortcut: shortcutLabel(settings.shortcuts.searchTerminal),
       action: openTerminalSearch,
     },
     {
@@ -902,7 +1087,7 @@ export function TerminalPane({
     {
       label: "Clear buffer",
       icon: Eraser,
-      shortcut: "Ctrl L",
+      shortcut: shortcutLabel(settings.shortcuts.clearTerminal),
       action: () => {
         terminalRef.current?.clear();
         window.fzTerminal.pty.write(pane.sessionId, "\x0c");
@@ -958,10 +1143,15 @@ export function TerminalPane({
 
   return (
     <section
-      className={`terminal-pane ${active ? "active" : ""} ${
+      className={`terminal-pane ${minimalChrome ? "minimal-chrome" : ""} ${
+        active ? "active" : ""
+      } ${
         bell ? "bell" : ""
-      } ${commandBlocks.length > 0 ? "has-command-blocks" : ""}`}
+      } ${commandBlocks.length > 0 ? "has-command-blocks" : ""} ${
+        historyOpen ? "history-open" : ""
+      } ${maximized ? "pane-maximized" : ""}`}
       data-session-id={pane.sessionId}
+      data-pane-id={pane.id}
       onMouseDown={onFocus}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -975,9 +1165,13 @@ export function TerminalPane({
             className={`pane-status ${exited ? "exited" : "running"}`}
           />
           <span>{exited ? "Exited" : title}</span>
-          {screenScrollEnabled && (
+          {(screenDetected || screenScrollEnabled) && (
             <span className={`pane-mode ${screenCopyActive ? "live" : ""}`}>
-              {screenCopyActive ? "SCREEN COPY" : "SCREEN WHEEL"}
+              {screenCopyActive
+                ? "SCREEN COPY"
+                : screenScrollEnabled
+                  ? "SCREEN WHEEL"
+                  : "SCREEN"}
             </span>
           )}
         </div>
@@ -1036,6 +1230,19 @@ export function TerminalPane({
           </button>
         </div>
       </header>
+      {minimalChrome && (screenDetected || screenScrollEnabled) && (
+        <span
+          className={`screen-mode-indicator ${
+            screenCopyActive ? "live" : ""
+          }`}
+        >
+          {screenCopyActive
+            ? "SCREEN COPY"
+            : screenScrollEnabled
+              ? "SCREEN WHEEL"
+              : "SCREEN"}
+        </span>
+      )}
       {commandBlocks.length > 0 && (
         <nav
           className="command-block-rail"
@@ -1081,7 +1288,7 @@ export function TerminalPane({
         style={
           {
             "--terminal-background": theme.xterm.background,
-            opacity: settings.appearance.opacity,
+            "--terminal-font-size": `${settings.appearance.fontSize}px`,
           } as CSSProperties
         }
       />
@@ -1211,6 +1418,24 @@ export function TerminalPane({
           </div>
         </div>
       )}
+      {!completion && suggestionSuffix && suggestionPosition && (
+          <div
+            className="inline-command-suggestion"
+            aria-label={`Suggestion: ${commandSuggestions[0]}`}
+            style={{
+              left: suggestionPosition.left,
+              top: suggestionPosition.top,
+              height: suggestionPosition.lineHeight,
+              lineHeight: `${suggestionPosition.lineHeight}px`,
+              maxWidth: suggestionPosition.maxWidth,
+            }}
+          >
+            <span>
+              {suggestionSuffix}
+            </span>
+            <kbd>Tab</kbd>
+          </div>
+      )}
       {completionNotice && (
         <div className="completion-notice">{completionNotice}</div>
       )}
@@ -1244,6 +1469,37 @@ export function TerminalPane({
 
 function historyStorageKey(sessionId: string) {
   return `fz-terminal-command-blocks:${sessionId}`;
+}
+
+const COMMAND_HISTORY_KEY = "fz-terminal-command-history";
+
+function loadCommandHistory() {
+  try {
+    const value = localStorage.getItem(COMMAND_HISTORY_KEY);
+    if (!value) return [];
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((command): command is string => typeof command === "string")
+      .map((command) => command.trim())
+      .filter(Boolean)
+      .slice(0, COMMAND_HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function saveCommandHistory(history: string[], command: string) {
+  const next = [
+    command,
+    ...history.filter((entry) => entry !== command),
+  ].slice(0, COMMAND_HISTORY_LIMIT);
+  try {
+    localStorage.setItem(COMMAND_HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // Suggestions continue in memory when profile storage is unavailable.
+  }
+  return next;
 }
 
 function loadCommandBlocks(sessionId: string): CommandBlock[] {
@@ -1365,7 +1621,7 @@ function selectCurrentInput(terminal: Terminal, trackedInput: string) {
   const command = trackedInput || readCommandAtCursor(terminal);
   if (!command) {
     terminal.clearSelection();
-    return;
+    return "";
   }
   const buffer = terminal.buffer.active;
   const cursorOffset =
@@ -1376,6 +1632,7 @@ function selectCurrentInput(terminal: Terminal, trackedInput: string) {
     Math.floor(startOffset / terminal.cols),
     command.length,
   );
+  return terminal.getSelection();
 }
 
 function buildExactSearchOptions(
@@ -1417,10 +1674,18 @@ function isScreenCommand(command: string) {
 
 function mixHexColors(background: string, foreground: string, ratio: number) {
   const parse = (value: string) => {
-    const hex = value.replace("#", "").slice(0, 6);
-    return [0, 2, 4].map((offset) =>
-      Number.parseInt(hex.slice(offset, offset + 2), 16),
+    const hex = value.match(/^#([\da-f]{6})/i)?.[1];
+    if (hex) {
+      return [0, 2, 4].map((offset) =>
+        Number.parseInt(hex.slice(offset, offset + 2), 16),
+      );
+    }
+    const rgb = value.match(
+      /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i,
     );
+    return rgb
+      ? rgb.slice(1, 4).map(Number)
+      : [13, 16, 22];
   };
   const base = parse(background);
   const accent = parse(foreground);

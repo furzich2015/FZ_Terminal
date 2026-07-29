@@ -124,7 +124,6 @@ if (process.env.FZ_CLEANUP === "1") {
           : (tabs.find((tab) => tab.kind === "terminal") ?? tabs[0]).id,
       };
     });
-    persisted.state.sidebarVisible = false;
     localStorage.setItem(key, JSON.stringify(persisted));
     return count;
   })()`);
@@ -174,6 +173,9 @@ await evaluate(`document
   .querySelector('.tab[data-tab-kind="terminal"] .tab-main')
   ?.click()`);
 await delay(180);
+const originalSidebarVisible = await evaluate(
+  `Boolean(document.querySelector(".sidebar"))`,
+);
 await evaluate(`(() => {
   if (document.querySelector(".sidebar")) {
     document.querySelector(
@@ -184,7 +186,12 @@ await evaluate(`(() => {
 await delay(120);
 const initial = await evaluate(`(() => {
   const stage = document.querySelector(".terminal-stage").getBoundingClientRect();
-  const pane = document.querySelector(".terminal-pane").getBoundingClientRect();
+  const paneElement = document.querySelector(".terminal-pane");
+  const pane = paneElement.getBoundingClientRect();
+  const allocation = (
+    paneElement.closest(".split-child") ??
+    document.querySelector(".terminal-stage")
+  ).getBoundingClientRect();
   const host = document.querySelector(".terminal-host").getBoundingClientRect();
   return {
     sidebarHidden: !document.querySelector(".sidebar"),
@@ -193,6 +200,10 @@ const initial = await evaluate(`(() => {
       width: pane.width / stage.width,
       height: pane.height / stage.height,
       hostHeight: host.height / pane.height,
+    },
+    allocationCoverage: {
+      width: pane.width / allocation.width,
+      height: pane.height / allocation.height,
     }
   };
 })()`);
@@ -369,8 +380,11 @@ if (!initial.sidebarHidden) failures.push("sidebar is visible by default");
 if (/\bShell\b|\bEdit\b|\bView\b/.test(initial.titlebar)) {
   failures.push("legacy menu labels remain in the titlebar");
 }
-if (initial.stageCoverage.height < 0.98) {
-  failures.push("terminal pane does not fill the stage");
+if (
+  initial.allocationCoverage.width < 0.98 ||
+  initial.allocationCoverage.height < 0.98
+) {
+  failures.push("terminal pane does not fill its split allocation");
 }
 if (!browser.mounted || browser.viewportHeight < 100) {
   failures.push("browser tab did not mount");
@@ -389,6 +403,15 @@ if (historyAfter !== historyBefore - 1) {
   failures.push("individual command block deletion failed");
 }
 
+await evaluate(`(() => {
+  const visible = Boolean(document.querySelector(".sidebar"));
+  if (visible !== ${JSON.stringify(originalSidebarVisible)}) {
+    document.querySelector(
+      '.titlebar-actions button[title="Toggle Commands"]',
+    )?.click();
+  }
+})()`);
+
 console.log(JSON.stringify({ ok: failures.length === 0, failures, report }, null, 2));
 socket.close();
-if (failures.length > 0) process.exitCode = 1;
+process.exit(failures.length > 0 ? 1 : 0);

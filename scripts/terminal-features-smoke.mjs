@@ -48,23 +48,63 @@ async function evaluate(expression) {
 }
 
 async function press(key, code, modifiers = 0) {
+  const keyCodes = {
+    Enter: 13,
+    Escape: 27,
+    Tab: 9,
+    " ": 32,
+  };
   await send("Input.dispatchKeyEvent", {
     type: "keyDown",
     key,
     code,
     modifiers,
-    windowsVirtualKeyCode: key === "Enter" ? 13 : key.toUpperCase().charCodeAt(0),
+    windowsVirtualKeyCode:
+      keyCodes[key] ?? key.toUpperCase().charCodeAt(0),
   });
   await send("Input.dispatchKeyEvent", {
     type: "keyUp",
     key,
     code,
     modifiers,
-    windowsVirtualKeyCode: key === "Enter" ? 13 : key.toUpperCase().charCodeAt(0),
+    windowsVirtualKeyCode:
+      keyCodes[key] ?? key.toUpperCase().charCodeAt(0),
   });
 }
 
+async function pressShortcut(shortcut) {
+  const parts = shortcut.split("+");
+  const rawKey = parts.at(-1);
+  const primaryModifier = process.platform === "darwin" ? 4 : 2;
+  const modifiers =
+    (parts.includes("Primary") ? primaryModifier : 0) +
+    (parts.includes("Ctrl") ? 2 : 0) +
+    (parts.includes("Meta") ? 4 : 0) +
+    (parts.includes("Shift") ? 8 : 0) +
+    (parts.includes("Alt") ? 1 : 0);
+  const keys = {
+    Equal: ["=", "Equal"],
+    Minus: ["-", "Minus"],
+    Digit0: ["0", "Digit0"],
+    Space: [" ", "Space"],
+    Comma: [",", "Comma"],
+    Tab: ["Tab", "Tab"],
+  };
+  const [key, code] = keys[rawKey] ?? [
+    rawKey,
+    rawKey.length === 1 ? `Key${rawKey.toUpperCase()}` : rawKey,
+  ];
+  await press(key, code, modifiers);
+}
+
 await send("Runtime.enable");
+const localSettings = await evaluate(`(() => {
+  const state = JSON.parse(localStorage.getItem("fz-terminal-state")).state;
+  return {
+    shortcuts: state.settings.shortcuts,
+    screenScrollMode: state.settings.terminal.screenScrollMode,
+  };
+})()`);
 await evaluate(`document.querySelector(".new-tab-button")?.click()`);
 await delay(80);
 await evaluate(`(() => {
@@ -94,7 +134,7 @@ await evaluate(
   `window.fzTerminal.clipboard.writeText(${JSON.stringify(command)})`,
 );
 await delay(80);
-await press("v", "KeyV", 2);
+await pressShortcut(localSettings.shortcuts.pasteTerminal);
 await delay(180);
 const beforeEnter = await evaluate(`(() => {
   const rows = [...document.querySelectorAll(
@@ -102,7 +142,6 @@ const beforeEnter = await evaluate(`(() => {
   )].map((row) => row.textContent).join("\\n");
   return (rows.split(${JSON.stringify(marker)}).length - 1);
 })()`);
-await press("c", "KeyC", 2);
 await press("Enter", "Enter");
 await delay(350);
 const afterEnter = await evaluate(`(() => {
@@ -123,7 +162,7 @@ const commandExecuted = await evaluate(`(() => {
   return Boolean(block?.output.includes(${JSON.stringify(marker)}));
 })()`);
 
-await press("f", "KeyF", 2);
+await pressShortcut(localSettings.shortcuts.searchTerminal);
 await delay(80);
 await evaluate(`(() => {
   const field = document.querySelector(".terminal-search input");
@@ -211,16 +250,44 @@ await delay(1650);
 const screenContext = await evaluate(
   `window.fzTerminal.pty.getContext(${JSON.stringify(sessionId)})`,
 );
-await evaluate(`document
+const wheelScreen = () => evaluate(`document
   .querySelector(".terminal-pane.active .terminal-host")
   ?.dispatchEvent(new WheelEvent("wheel", {
     bubbles: true,
     cancelable: true,
     deltaY: -130,
   }))`);
+await wheelScreen();
 await delay(120);
-const screenMode = await evaluate(
-  `document.querySelector(".terminal-pane.active .pane-mode")?.textContent`,
+const automaticScreenMode = await evaluate(
+  `document.querySelector(
+    ".terminal-pane.active .pane-mode, .terminal-pane.active .screen-mode-indicator",
+  )?.textContent`,
+);
+if (!localSettings.screenScrollMode) {
+  await evaluate(`(() => {
+    const pane = document.querySelector(".terminal-pane.active");
+    pane?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 200,
+      clientY: 160,
+    }));
+  })()`);
+  await delay(80);
+  await evaluate(`(() => {
+    const entry = [...document.querySelectorAll(".context-menu .menu-entry")]
+      .find((item) => item.textContent.includes("Enable GNU Screen wheel"));
+    entry?.click();
+  })()`);
+  await delay(80);
+  await wheelScreen();
+  await delay(120);
+}
+const optedInScreenMode = await evaluate(
+  `document.querySelector(
+    ".terminal-pane.active .pane-mode, .terminal-pane.active .screen-mode-indicator",
+  )?.textContent`,
 );
 await evaluate(
   `window.fzTerminal.pty.write(${JSON.stringify(sessionId)}, "\\u0003")`,
@@ -238,13 +305,18 @@ const report = {
   search,
   completion: { before: completionBefore, after: completionAfter },
   ssh: { context: sshContext, completion: sshCompletion },
-  screen: { context: screenContext, mode: screenMode },
+  screen: {
+    setting: localSettings.screenScrollMode,
+    context: screenContext,
+    automaticMode: automaticScreenMode,
+    optedInMode: optedInScreenMode,
+  },
 };
 const failures = [];
-if (beforeEnter !== 1) failures.push("Ctrl+V pasted more or less than once");
-if (!commandExecuted) failures.push("Ctrl+C interrupted the pasted command");
+if (beforeEnter !== 1) failures.push("Paste shortcut pasted more or less than once");
+if (!commandExecuted) failures.push("The pasted command was not executed");
 if (!search.count || search.count === "0/0") {
-  failures.push("Ctrl+F did not find the exact terminal text");
+  failures.push("Search shortcut did not find the exact terminal text");
 }
 if (!search.swatch) failures.push("search highlight color is not visible");
 if (!completionBefore.open || completionBefore.count < 1) {
@@ -259,10 +331,22 @@ if (sshCompletion.popup || !sshCompletion.notice) {
 if (screenContext.multiplexer !== "screen") {
   failures.push("GNU Screen process was not detected");
 }
-if (!screenMode?.includes("SCREEN COPY")) {
-  failures.push("Screen wheel did not enter copy mode");
+if (
+  localSettings.screenScrollMode &&
+  !automaticScreenMode?.includes("SCREEN COPY")
+) {
+  failures.push("Enabled Screen setting did not apply automatically");
+}
+if (
+  !localSettings.screenScrollMode &&
+  automaticScreenMode?.includes("SCREEN COPY")
+) {
+  failures.push("Disabled Screen setting applied automatic wheel behavior");
+}
+if (!optedInScreenMode?.includes("SCREEN COPY")) {
+  failures.push("Screen wheel did not enter copy mode after opt-in");
 }
 
 console.log(JSON.stringify({ ok: failures.length === 0, failures, report }, null, 2));
 socket.close();
-if (failures.length > 0) process.exitCode = 1;
+process.exit(failures.length > 0 ? 1 : 0);

@@ -43,12 +43,18 @@ contextBridge.exposeInMainWorld("fzTerminal", {
     minimize: () => ipcRenderer.send("window:minimize"),
     toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
     close: () => ipcRenderer.send("window:close"),
+    setOpacity: (value) => {
+      if (Number.isFinite(value)) ipcRenderer.send("window:set-opacity", value);
+    },
     isMaximized: () => ipcRenderer.invoke("window:is-maximized"),
     onMaximized: (callback) => {
       const listener = (_event, value) => callback(Boolean(value));
       ipcRenderer.on("window:maximized", listener);
       return () => ipcRenderer.removeListener("window:maximized", listener);
     },
+  },
+  fonts: {
+    list: () => ipcRenderer.invoke("fonts:list"),
   },
   pty: {
     create: (options) => {
@@ -97,7 +103,7 @@ contextBridge.exposeInMainWorld("fzTerminal", {
   },
   clipboard: {
     readText: () => ipcRenderer.invoke("clipboard:read"),
-    writeText: (text) => ipcRenderer.send("clipboard:write", text),
+    writeText: (text) => ipcRenderer.invoke("clipboard:write", text),
   },
   browser: {
     create: (id, url, bounds) => {
