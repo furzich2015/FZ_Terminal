@@ -12,6 +12,7 @@ import { TerminalPane } from "./TerminalPane";
 
 interface SplitViewProps {
   node: SplitNode;
+  nested?: boolean;
   workspace: Workspace;
   tab: TerminalTab;
   settings: AppSettings;
@@ -25,6 +26,7 @@ interface SplitViewProps {
 export function SplitView(props: SplitViewProps) {
   const {
     node,
+    nested = false,
     workspace,
     tab,
     settings,
@@ -44,6 +46,7 @@ export function SplitView(props: SplitViewProps) {
       <TerminalPane
         key={node.id}
         pane={node}
+        minimalChrome={!nested}
         active={node.id === tab.activePaneId}
         settings={settings}
         theme={theme}
@@ -87,7 +90,7 @@ export function SplitView(props: SplitViewProps) {
       style={gridStyle}
     >
       <div className="split-child">
-        <SplitView {...props} node={node.first} />
+        <SplitView {...props} node={node.first} nested />
       </div>
       <div
         className="split-divider"
@@ -104,7 +107,7 @@ export function SplitView(props: SplitViewProps) {
         <span />
       </div>
       <div className="split-child">
-        <SplitView {...props} node={node.second} />
+        <SplitView {...props} node={node.second} nested />
       </div>
     </div>
   );

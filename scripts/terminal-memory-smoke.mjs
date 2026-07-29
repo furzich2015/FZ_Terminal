@@ -108,19 +108,29 @@ await waitFor(
     .then((result) => Boolean(result.cwd))`,
 );
 await evaluate(
-  `document.querySelector(${JSON.stringify(`${paneSelector} .terminal-host`)})?.click()`,
+  `(() => {
+    document.querySelector(
+      ${JSON.stringify(`${paneSelector} .terminal-host`)},
+    )?.click();
+    document.querySelector(
+      ${JSON.stringify(`${paneSelector} .xterm-helper-textarea`)},
+    )?.focus();
+  })()`,
 );
 const sidebarWasVisible = await evaluate(
   `Boolean(document.querySelector(".sidebar"))`,
 );
+const terminalSettings = await evaluate(`(() => {
+  const state = JSON.parse(localStorage.getItem("fz-terminal-state")).state;
+  return state.settings.terminal;
+})()`);
+const screenScrollConfigured = terminalSettings.screenScrollMode;
 
 const selectionCommand = `printf 'FZ_SELECT_${Date.now()}\\n'`;
 await type(selectionCommand);
-await delay(100);
+await delay(300);
 await press("a", "KeyA", 2);
 await delay(80);
-await press("c", "KeyC", 2);
-await delay(100);
 const selectedText = await evaluate(`window.fzTerminal.clipboard.readText()`);
 await press("Enter", "Enter");
 await delay(250);
@@ -128,7 +138,6 @@ await delay(250);
 const copySafeMarker = `FZ_COPY_SAFE_${Date.now()}`;
 const copySafeCommand = `printf '${copySafeMarker}\\n'`;
 await type(copySafeCommand);
-await press("c", "KeyC", 2);
 await press("Enter", "Enter");
 await delay(250);
 const copySafe = await evaluate(`(() => {
@@ -244,11 +253,14 @@ const report = {
   selection: {
     expected: selectionCommand,
     copied: selectedText,
+    automatic: selectedText === selectionCommand,
+    copyOnSelect: terminalSettings.copyOnSelect,
   },
   copySafe,
   memory,
   openedBlock,
   screen: {
+    configured: screenScrollConfigured,
     beforeResize: screenBeforeResize,
     afterResize: screenAfterResize,
     afterWheel: screenAfterWheel,
@@ -256,10 +268,10 @@ const report = {
 };
 const failures = [];
 if (selectedText !== selectionCommand) {
-  failures.push("Ctrl+A did not select the complete current command");
+  failures.push("Ctrl+A selection was not copied automatically");
 }
 if (!copySafe.recorded || !copySafe.producedOutput) {
-  failures.push("Ctrl+C interrupted a command when no text was selected");
+  failures.push("typing after an automatic copy changed command execution");
 }
 if (memory.scrollback < 100_000) {
   failures.push("scrollback migration did not raise the retained line count");
@@ -277,14 +289,22 @@ if (
 ) {
   failures.push("clicking a collapsed block did not open its output");
 }
-if (!screenBeforeResize?.includes("SCREEN COPY")) {
-  failures.push("GNU Screen wheel did not enter copy mode before resize");
-}
-if (!screenAfterResize?.includes("SCREEN WHEEL")) {
-  failures.push("GNU Screen copy mode was not reset after resize");
-}
-if (!screenAfterWheel?.includes("SCREEN COPY")) {
-  failures.push("GNU Screen wheel did not recover after resize");
+if (screenScrollConfigured) {
+  if (!screenBeforeResize?.includes("SCREEN COPY")) {
+    failures.push("GNU Screen wheel did not enter copy mode before resize");
+  }
+  if (!screenAfterResize?.includes("SCREEN WHEEL")) {
+    failures.push("GNU Screen copy mode was not reset after resize");
+  }
+  if (!screenAfterWheel?.includes("SCREEN COPY")) {
+    failures.push("GNU Screen wheel did not recover after resize");
+  }
+} else if (
+  screenBeforeResize?.includes("COPY") ||
+  screenAfterResize?.includes("COPY") ||
+  screenAfterWheel?.includes("COPY")
+) {
+  failures.push("GNU Screen wheel automated copy mode while disabled");
 }
 
 console.log(JSON.stringify({ ok: failures.length === 0, failures, report }, null, 2));

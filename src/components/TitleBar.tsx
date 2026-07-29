@@ -1,24 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  Columns2,
   Download,
   LoaderCircle,
   Maximize2,
   Minus,
-  PanelLeft,
   Search,
   Settings,
+  Zap,
   X,
 } from "lucide-react";
 import type { UpdateStatus } from "../types";
-import appMark from "../../assets/branding/fz-terminal.svg";
-import { WorkspaceBar } from "./WorkspaceBar";
 
 interface TitleBarProps {
+  children: ReactNode;
   sidebarVisible: boolean;
   terminalActive: boolean;
   onToggleSidebar: () => void;
-  onNewWorkspace: () => void;
-  onCloseWorkspace: (workspaceId: string) => void;
+  onSplitHorizontal: () => void;
   onOpenSettings: () => void;
   onOpenUpdates: () => void;
   onSearchTerminal: () => void;
@@ -26,11 +25,11 @@ interface TitleBarProps {
 }
 
 export function TitleBar({
+  children,
   sidebarVisible,
   terminalActive,
   onToggleSidebar,
-  onNewWorkspace,
-  onCloseWorkspace,
+  onSplitHorizontal,
   onOpenSettings,
   onOpenUpdates,
   onSearchTerminal,
@@ -57,7 +56,7 @@ export function TitleBar({
             type="button"
             onClick={window.fzTerminal.window.close}
           >
-            <X size={8} />
+            <X size={10} strokeWidth={2.4} />
           </button>
           <button
             className="traffic-light minimize"
@@ -65,7 +64,7 @@ export function TitleBar({
             type="button"
             onClick={window.fzTerminal.window.minimize}
           >
-            <Minus size={8} />
+            <Minus size={10} strokeWidth={2.4} />
           </button>
           <button
             className="traffic-light maximize"
@@ -73,21 +72,12 @@ export function TitleBar({
             type="button"
             onClick={window.fzTerminal.window.toggleMaximize}
           >
-            <Maximize2 size={7} />
+            <Maximize2 size={9} strokeWidth={2.2} />
           </button>
         </div>
-        <span className="titlebar-appmark">
-          <img src={appMark} alt="" />
-          <span>FZ</span>
-        </span>
       </div>
 
-      <div className="titlebar-workspaces no-drag">
-        <WorkspaceBar
-          onNewWorkspace={onNewWorkspace}
-          onCloseWorkspace={onCloseWorkspace}
-        />
-      </div>
+      <div className="titlebar-tabs">{children}</div>
 
       <div className="titlebar-actions no-drag">
         {showUpdate && (
@@ -114,15 +104,21 @@ export function TitleBar({
           <Search size={14} />
         </button>
         <button
-          className={`toolbar-button with-label ${
-            sidebarVisible ? "active" : ""
-          }`}
+          className="toolbar-button"
+          type="button"
+          title="Split left / right"
+          disabled={!terminalActive}
+          onClick={onSplitHorizontal}
+        >
+          <Columns2 size={14} />
+        </button>
+        <button
+          className={`toolbar-button ${sidebarVisible ? "active" : ""}`}
           type="button"
           title="Toggle Commands"
           onClick={onToggleSidebar}
         >
-          <PanelLeft size={14} />
-          <span>Commands</span>
+          <Zap size={14} />
         </button>
         <button
           className="toolbar-button"

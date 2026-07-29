@@ -1,53 +1,59 @@
-import type { FontId, ThemeDefinition, ThemeId } from "../types";
+import type {
+  AppSettings,
+  CustomPalette,
+  FontId,
+  ThemeDefinition,
+  ThemeId,
+} from "../types";
 
 export const themes: Record<ThemeId, ThemeDefinition> = {
   "neon-violet": {
     id: "neon-violet",
     label: "Neon Violet",
-    description: "Electric violet and cyan on deep ink",
-    swatches: ["#090713", "#17112a", "#b55cff", "#3ff6d7"],
+    description: "Electric violet and acid-green on tactical black",
+    swatches: ["#07090e", "#121722", "#9d6cff", "#3df2b1"],
     ui: {
-      app: "#090713",
-      titlebar: "#0d0a19",
-      sidebar: "#0f0b1c",
-      surface: "#120e22",
-      elevated: "#19122d",
-      hover: "#24183d",
-      border: "#2d2146",
-      borderStrong: "#55347c",
-      text: "#f3edff",
-      textMuted: "#ad9fc4",
-      textFaint: "#736783",
-      accent: "#b55cff",
-      accentHover: "#cb7bff",
-      accentSoft: "rgba(181, 92, 255, 0.16)",
-      shadow: "rgba(1, 0, 8, 0.68)",
-      danger: "#ff5f87",
-      warning: "#ffd166",
-      success: "#42f5b3",
+      app: "#07090e",
+      titlebar: "#0b0e14",
+      sidebar: "#0c1017",
+      surface: "#0f141d",
+      elevated: "#151b26",
+      hover: "#1b2431",
+      border: "#202a37",
+      borderStrong: "#3b4b60",
+      text: "#eef4fb",
+      textMuted: "#8e9bad",
+      textFaint: "#526174",
+      accent: "#9d6cff",
+      accentHover: "#b28cff",
+      accentSoft: "rgba(157, 108, 255, 0.14)",
+      shadow: "rgba(0, 0, 0, 0.62)",
+      danger: "#ff5f78",
+      warning: "#ffca4a",
+      success: "#3df2b1",
     },
     xterm: {
-      background: "#090713",
-      foreground: "#eee7fa",
-      cursor: "#45f7dc",
-      cursorAccent: "#090713",
-      selectionBackground: "#b55cff55",
-      selectionInactiveBackground: "#56377c55",
-      black: "#17112a",
-      red: "#ff5f87",
-      green: "#42f5b3",
-      yellow: "#ffd166",
-      blue: "#6ba6ff",
-      magenta: "#c66bff",
-      cyan: "#45f7dc",
-      white: "#e9e0f5",
-      brightBlack: "#766788",
-      brightRed: "#ff82a1",
-      brightGreen: "#72ffca",
-      brightYellow: "#ffe08a",
-      brightBlue: "#8ab9ff",
-      brightMagenta: "#db91ff",
-      brightCyan: "#79ffeb",
+      background: "#07090e",
+      foreground: "#e8eef6",
+      cursor: "#3df2b1",
+      cursorAccent: "#07090e",
+      selectionBackground: "#9d6cff52",
+      selectionInactiveBackground: "#34405252",
+      black: "#121722",
+      red: "#ff5f78",
+      green: "#3df2b1",
+      yellow: "#ffca4a",
+      blue: "#5d9dff",
+      magenta: "#aa72ff",
+      cyan: "#38d9ff",
+      white: "#e8eef6",
+      brightBlack: "#526174",
+      brightRed: "#ff8094",
+      brightGreen: "#6affca",
+      brightYellow: "#ffdc7a",
+      brightBlue: "#83b7ff",
+      brightMagenta: "#c096ff",
+      brightCyan: "#72e5ff",
       brightWhite: "#ffffff",
     },
   },
@@ -348,32 +354,415 @@ export const themes: Record<ThemeId, ThemeDefinition> = {
       brightWhite: "#ffffff",
     },
   },
+  matrix: {
+    id: "matrix",
+    label: "Matrix",
+    description: "Near-black tactical UI with phosphor-green signals",
+    swatches: ["#030805", "#0b1710", "#54f58c", "#d7ff63"],
+    ui: {
+      app: "#030805",
+      titlebar: "#060c08",
+      sidebar: "#07100b",
+      surface: "#09140d",
+      elevated: "#0d1b12",
+      hover: "#13271a",
+      border: "#173321",
+      borderStrong: "#28603b",
+      text: "#e5f8e9",
+      textMuted: "#85a98e",
+      textFaint: "#4d7056",
+      accent: "#54f58c",
+      accentHover: "#78ffa6",
+      accentSoft: "rgba(84, 245, 140, 0.13)",
+      shadow: "rgba(0, 5, 1, 0.72)",
+      danger: "#ff5f70",
+      warning: "#d7ff63",
+      success: "#54f58c",
+    },
+    xterm: {
+      background: "#030805",
+      foreground: "#ccebd3",
+      cursor: "#d7ff63",
+      cursorAccent: "#030805",
+      selectionBackground: "#2f784b88",
+      black: "#0b1710",
+      red: "#ff5f70",
+      green: "#54f58c",
+      yellow: "#d7ff63",
+      blue: "#60a5fa",
+      magenta: "#c084fc",
+      cyan: "#45e8c2",
+      white: "#ccebd3",
+      brightBlack: "#4d7056",
+      brightRed: "#ff8290",
+      brightGreen: "#80ffaa",
+      brightYellow: "#e6ff91",
+      brightBlue: "#87bcff",
+      brightMagenta: "#d2a4ff",
+      brightCyan: "#78f5d8",
+      brightWhite: "#f4fff7",
+    },
+  },
+  "tokyo-night": {
+    id: "tokyo-night",
+    label: "Tokyo Night",
+    description: "Indigo night surfaces with electric blue and magenta",
+    swatches: ["#0f111a", "#1a1b2e", "#7aa2f7", "#bb9af7"],
+    ui: {
+      app: "#0f111a",
+      titlebar: "#131521",
+      sidebar: "#151724",
+      surface: "#171925",
+      elevated: "#1f2335",
+      hover: "#292e42",
+      border: "#292e42",
+      borderStrong: "#3b4261",
+      text: "#c0caf5",
+      textMuted: "#9aa5ce",
+      textFaint: "#565f89",
+      accent: "#7aa2f7",
+      accentHover: "#9ab8ff",
+      accentSoft: "rgba(122, 162, 247, 0.15)",
+      shadow: "rgba(3, 4, 12, 0.64)",
+      danger: "#f7768e",
+      warning: "#e0af68",
+      success: "#9ece6a",
+    },
+    xterm: {
+      background: "#0f111a",
+      foreground: "#c0caf5",
+      cursor: "#c0caf5",
+      cursorAccent: "#0f111a",
+      selectionBackground: "#33467c99",
+      black: "#1a1b26",
+      red: "#f7768e",
+      green: "#9ece6a",
+      yellow: "#e0af68",
+      blue: "#7aa2f7",
+      magenta: "#bb9af7",
+      cyan: "#7dcfff",
+      white: "#a9b1d6",
+      brightBlack: "#565f89",
+      brightRed: "#ff899d",
+      brightGreen: "#b9e88b",
+      brightYellow: "#f2c681",
+      brightBlue: "#9ab8ff",
+      brightMagenta: "#cdb2ff",
+      brightCyan: "#9de0ff",
+      brightWhite: "#d7dcff",
+    },
+  },
+  gruvbox: {
+    id: "gruvbox",
+    label: "Gruvbox",
+    description: "Warm retro contrast with strong semantic ANSI colors",
+    swatches: ["#1d2021", "#3c3836", "#fabd2f", "#b8bb26"],
+    ui: {
+      app: "#1d2021",
+      titlebar: "#242424",
+      sidebar: "#282828",
+      surface: "#2b2928",
+      elevated: "#3c3836",
+      hover: "#504945",
+      border: "#4a443f",
+      borderStrong: "#665c54",
+      text: "#ebdbb2",
+      textMuted: "#bdae93",
+      textFaint: "#7c6f64",
+      accent: "#fabd2f",
+      accentHover: "#ffd05c",
+      accentSoft: "rgba(250, 189, 47, 0.13)",
+      shadow: "rgba(16, 12, 9, 0.58)",
+      danger: "#fb4934",
+      warning: "#fabd2f",
+      success: "#b8bb26",
+    },
+    xterm: {
+      background: "#1d2021",
+      foreground: "#ebdbb2",
+      cursor: "#fe8019",
+      cursorAccent: "#1d2021",
+      selectionBackground: "#665c5488",
+      black: "#282828",
+      red: "#cc241d",
+      green: "#98971a",
+      yellow: "#d79921",
+      blue: "#458588",
+      magenta: "#b16286",
+      cyan: "#689d6a",
+      white: "#a89984",
+      brightBlack: "#928374",
+      brightRed: "#fb4934",
+      brightGreen: "#b8bb26",
+      brightYellow: "#fabd2f",
+      brightBlue: "#83a598",
+      brightMagenta: "#d3869b",
+      brightCyan: "#8ec07c",
+      brightWhite: "#ebdbb2",
+    },
+  },
+  "rose-pine": {
+    id: "rose-pine",
+    label: "Rosé Pine",
+    description: "Muted ink, rose highlights, and balanced pastel ANSI",
+    swatches: ["#191724", "#26233a", "#ebbcba", "#9ccfd8"],
+    ui: {
+      app: "#191724",
+      titlebar: "#1f1d2e",
+      sidebar: "#211f32",
+      surface: "#26233a",
+      elevated: "#2a273f",
+      hover: "#393552",
+      border: "#393552",
+      borderStrong: "#524f67",
+      text: "#e0def4",
+      textMuted: "#908caa",
+      textFaint: "#6e6a86",
+      accent: "#c4a7e7",
+      accentHover: "#d6baff",
+      accentSoft: "rgba(196, 167, 231, 0.15)",
+      shadow: "rgba(11, 9, 18, 0.58)",
+      danger: "#eb6f92",
+      warning: "#f6c177",
+      success: "#9ccfd8",
+    },
+    xterm: {
+      background: "#191724",
+      foreground: "#e0def4",
+      cursor: "#ebbcba",
+      cursorAccent: "#191724",
+      selectionBackground: "#524f6788",
+      black: "#26233a",
+      red: "#eb6f92",
+      green: "#9ccfd8",
+      yellow: "#f6c177",
+      blue: "#31748f",
+      magenta: "#c4a7e7",
+      cyan: "#9ccfd8",
+      white: "#e0def4",
+      brightBlack: "#6e6a86",
+      brightRed: "#f08aaa",
+      brightGreen: "#b1e0e7",
+      brightYellow: "#ffd394",
+      brightBlue: "#4f91ad",
+      brightMagenta: "#d5b8f2",
+      brightCyan: "#b6e6ed",
+      brightWhite: "#f4f1ff",
+    },
+  },
 };
 
 export const fonts: Record<FontId, { label: string; css: string }> = {
   cascadia: {
     label: "Cascadia Code",
-    css: '"Cascadia Code", monospace',
+    css: '"Cascadia Code", "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", monospace',
   },
   "ibm-plex": {
     label: "IBM Plex Mono",
-    css: '"IBM Plex Mono", monospace',
+    css: '"IBM Plex Mono", "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", monospace',
   },
   "dm-mono": {
     label: "DM Mono",
-    css: '"DM Mono", monospace',
+    css: '"DM Mono", "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", monospace',
   },
 };
 
-export function applyTheme(themeId: ThemeId) {
-  const theme = themes[themeId];
+export function paletteFromTheme(theme: ThemeDefinition): CustomPalette {
+  return {
+    app: theme.ui.app,
+    titlebar: theme.ui.titlebar,
+    sidebar: theme.ui.sidebar,
+    surface: theme.ui.surface,
+    elevated: theme.ui.elevated,
+    hover: theme.ui.hover,
+    border: theme.ui.border,
+    borderStrong: theme.ui.borderStrong,
+    text: theme.ui.text,
+    textMuted: theme.ui.textMuted,
+    textFaint: theme.ui.textFaint,
+    accent: theme.ui.accent,
+    accentHover: theme.ui.accentHover,
+    danger: theme.ui.danger,
+    warning: theme.ui.warning,
+    success: theme.ui.success,
+    terminalBackground: theme.xterm.background ?? theme.ui.app,
+    terminalForeground: theme.xterm.foreground ?? theme.ui.text,
+    terminalCursor: theme.xterm.cursor ?? theme.ui.accent,
+    terminalSelection:
+      normalizeHex(theme.xterm.selectionBackground) ?? theme.ui.accent,
+    ansiBlack: theme.xterm.black ?? theme.ui.app,
+    ansiRed: theme.xterm.red ?? theme.ui.danger,
+    ansiGreen: theme.xterm.green ?? theme.ui.success,
+    ansiYellow: theme.xterm.yellow ?? theme.ui.warning,
+    ansiBlue: theme.xterm.blue ?? theme.ui.accent,
+    ansiMagenta: theme.xterm.magenta ?? theme.ui.accent,
+    ansiCyan: theme.xterm.cyan ?? theme.ui.accent,
+    ansiWhite: theme.xterm.white ?? theme.ui.text,
+  };
+}
+
+export function resolveTheme(
+  appearance: AppSettings["appearance"],
+): ThemeDefinition {
+  const base = themes[appearance.theme];
+  const palette = appearance.advancedColors
+    ? appearance.customPalette
+    : paletteFromTheme(base);
+  const improveContrast = appearance.highContrastText
+    ? 0.58
+    : appearance.advancedColors
+      ? 0
+      : 0.3;
+  const textMuted = mixColors(
+    palette.textMuted,
+    palette.text,
+    improveContrast,
+  );
+  const textFaint = mixColors(
+    palette.textFaint,
+    palette.text,
+    appearance.highContrastText
+      ? 0.68
+      : appearance.advancedColors
+        ? 0
+        : 0.45,
+  );
+
+  return {
+    ...base,
+    ui: {
+      app: palette.app,
+      titlebar: palette.titlebar,
+      sidebar: palette.sidebar,
+      surface: palette.surface,
+      elevated: palette.elevated,
+      hover: palette.hover,
+      border: palette.border,
+      borderStrong: palette.borderStrong,
+      text: palette.text,
+      textMuted,
+      textFaint,
+      accent: palette.accent,
+      accentHover: palette.accentHover,
+      accentSoft: withAlpha(palette.accent, 0.16),
+      shadow: withAlpha(palette.ansiBlack, 0.58),
+      danger: palette.danger,
+      warning: palette.warning,
+      success: palette.success,
+    },
+    xterm: {
+      ...base.xterm,
+      background: withAlpha(
+        palette.terminalBackground,
+        appearance.opacity,
+      ),
+      foreground: palette.terminalForeground,
+      cursor: palette.terminalCursor,
+      cursorAccent: palette.terminalBackground,
+      selectionBackground: withAlpha(palette.terminalSelection, 0.46),
+      selectionInactiveBackground: withAlpha(
+        palette.terminalSelection,
+        0.25,
+      ),
+      black: palette.ansiBlack,
+      red: palette.ansiRed,
+      green: palette.ansiGreen,
+      yellow: palette.ansiYellow,
+      blue: palette.ansiBlue,
+      magenta: palette.ansiMagenta,
+      cyan: palette.ansiCyan,
+      white: palette.ansiWhite,
+      brightBlack: mixColors(palette.ansiBlack, palette.ansiWhite, 0.42),
+      brightRed: mixColors(palette.ansiRed, "#ffffff", 0.22),
+      brightGreen: mixColors(palette.ansiGreen, "#ffffff", 0.22),
+      brightYellow: mixColors(palette.ansiYellow, "#ffffff", 0.2),
+      brightBlue: mixColors(palette.ansiBlue, "#ffffff", 0.22),
+      brightMagenta: mixColors(palette.ansiMagenta, "#ffffff", 0.22),
+      brightCyan: mixColors(palette.ansiCyan, "#ffffff", 0.22),
+      brightWhite: mixColors(palette.ansiWhite, "#ffffff", 0.38),
+    },
+  };
+}
+
+export function applyTheme(
+  theme: ThemeDefinition,
+  appearance: AppSettings["appearance"],
+) {
   const root = document.documentElement;
   for (const [name, value] of Object.entries(theme.ui)) {
     root.style.setProperty(`--${toKebabCase(name)}`, value);
   }
-  root.dataset.theme = themeId;
+  root.style.setProperty(
+    "--ui-font-family",
+    buildFontStack(appearance.uiFontFamily, false),
+  );
+  root.style.setProperty(
+    "--terminal-font-family",
+    buildFontStack(appearance.terminalFontFamily, true),
+  );
+  root.style.setProperty("--ui-font-size", `${appearance.uiFontSize}px`);
+  root.style.setProperty("--ui-radius", `${appearance.cornerRadius}px`);
+  root.style.setProperty("--panel-gap", `${appearance.panelGap}px`);
+  root.style.setProperty("--interface-blur", `${appearance.interfaceBlur}px`);
+  root.style.setProperty(
+    "--window-opacity",
+    String(Math.min(1, Math.max(0.2, appearance.interfaceOpacity))),
+  );
+  root.dataset.theme = theme.id;
+  root.dataset.backgroundGrid = String(appearance.showBackgroundGrid);
+  root.dataset.highContrast = String(appearance.highContrastText);
 }
 
 function toKebabCase(value: string) {
   return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
+export function buildFontStack(family: string, monospace: boolean) {
+  const clean = family.replace(/["'`;{}]/g, "").trim().slice(0, 128);
+  const primary =
+    !clean || clean === "system-ui"
+      ? "system-ui"
+      : `"${clean.replaceAll("\\", "\\\\")}"`;
+  return [
+    primary,
+    '"Noto Color Emoji"',
+    '"Segoe UI Emoji"',
+    '"Apple Color Emoji"',
+    monospace ? "monospace" : "sans-serif",
+  ].join(", ");
+}
+
+function normalizeHex(value: string | undefined) {
+  if (!value) return null;
+  const match = value.match(/^#([\da-f]{6})/i);
+  return match ? `#${match[1]}` : null;
+}
+
+function withAlpha(value: string, alpha: number) {
+  const hex = normalizeHex(value);
+  if (!hex) return value;
+  if (alpha >= 0.999) return hex;
+  const channels = [1, 3, 5].map((offset) =>
+    Number.parseInt(hex.slice(offset, offset + 2), 16),
+  );
+  return `rgba(${channels.join(", ")}, ${Math.min(1, Math.max(0, alpha))})`;
+}
+
+function mixColors(from: string, to: string, ratio: number) {
+  const left = normalizeHex(from);
+  const right = normalizeHex(to);
+  if (!left || !right || ratio <= 0) return from;
+  const read = (value: string) =>
+    [1, 3, 5].map((offset) =>
+      Number.parseInt(value.slice(offset, offset + 2), 16),
+    );
+  const start = read(left);
+  const end = read(right);
+  return `#${start
+    .map((value, index) =>
+      Math.round(value + (end[index] - value) * Math.min(1, ratio))
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
 }

@@ -177,6 +177,7 @@ export function PromptModal({
         <span>{label}</span>
         <input
           autoFocus
+          size={Math.min(48, Math.max(12, value.length + 2))}
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}

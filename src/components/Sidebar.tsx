@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
   Edit3,
   FolderPlus,
+  GripVertical,
   MoreHorizontal,
   Play,
   Plus,
@@ -11,6 +12,7 @@ import {
   Settings,
   Terminal,
   Trash2,
+  X,
 } from "lucide-react";
 import type { QuickCommand } from "../types";
 import { useAppStore } from "../store/appStore";
@@ -21,11 +23,13 @@ import { Toggle } from "./Toggle";
 interface SidebarProps {
   onRunCommand: (command: QuickCommand) => void;
   onOpenSettings: () => void;
+  onClose: () => void;
 }
 
 export function Sidebar({
   onRunCommand,
   onOpenSettings,
+  onClose,
 }: SidebarProps) {
   const groups = useAppStore((state) => state.commandGroups);
   const toggleGroup = useAppStore((state) => state.toggleCommandGroup);
@@ -35,6 +39,8 @@ export function Sidebar({
   const addCommand = useAppStore((state) => state.addCommand);
   const updateCommand = useAppStore((state) => state.updateCommand);
   const removeCommand = useAppStore((state) => state.removeCommand);
+  const moveCommandGroup = useAppStore((state) => state.moveCommandGroup);
+  const moveCommand = useAppStore((state) => state.moveCommand);
 
   const [search, setSearch] = useState("");
   const [newGroup, setNewGroup] = useState<string | null>(null);
@@ -57,6 +63,18 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
+  const [dragTarget, setDragTarget] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const focusPalette = () => {
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener("fz:focus-command-palette", focusPalette);
+    return () =>
+      window.removeEventListener("fz:focus-command-palette", focusPalette);
+  }, []);
 
   const filteredGroups = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -158,23 +176,41 @@ export function Sidebar({
             >
               <FolderPlus size={15} />
             </button>
+            <button
+              className="icon-button"
+              type="button"
+              title="Close commands"
+              aria-label="Close commands"
+              onClick={onClose}
+            >
+              <X size={15} />
+            </button>
           </div>
         </div>
 
         <label className="sidebar-search">
           <Search size={13} />
           <input
+            ref={searchRef}
+            size={Math.min(36, Math.max(12, search.length + 2))}
             value={search}
-            placeholder="Filter commands"
+            placeholder="Search commands…"
             onChange={(event) => setSearch(event.target.value)}
           />
         </label>
 
         <div className="command-groups">
           {filteredGroups.map((group) => (
-            <section className="command-group" key={group.id}>
+            <section
+              className={`command-group ${
+                dragTarget === `group:${group.id}` ? "drag-target" : ""
+              }`}
+              key={group.id}
+              data-group-id={group.id}
+            >
               <div
                 className="command-group-header"
+                draggable
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMenu({
@@ -184,7 +220,57 @@ export function Sidebar({
                     y: event.clientY,
                   });
                 }}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData(
+                    "application/x-fz-command-group",
+                    group.id,
+                  );
+                }}
+                onDragEnd={() => setDragTarget(null)}
+                onDragOver={(event) => {
+                  if (
+                    !event.dataTransfer.types.some((type) =>
+                      [
+                        "application/x-fz-command-group",
+                        "application/x-fz-command",
+                      ].includes(type),
+                    )
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDragTarget(`group:${group.id}`);
+                }}
+                onDragLeave={() =>
+                  setDragTarget((current) =>
+                    current === `group:${group.id}` ? null : current,
+                  )
+                }
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceGroupId = event.dataTransfer.getData(
+                    "application/x-fz-command-group",
+                  );
+                  if (sourceGroupId) {
+                    moveCommandGroup(sourceGroupId, group.id);
+                  } else {
+                    const payload = readCommandDrag(event.dataTransfer);
+                    if (payload) {
+                      moveCommand(
+                        payload.groupId,
+                        payload.commandId,
+                        group.id,
+                      );
+                    }
+                  }
+                  setDragTarget(null);
+                }}
               >
+                <span className="drag-grip" title="Drag folder">
+                  <GripVertical size={12} />
+                </span>
                 <button
                   type="button"
                   className="group-toggle"
@@ -220,8 +306,14 @@ export function Sidebar({
                 <div className="command-list">
                   {group.commands.map((command) => (
                     <div
-                      className="command-item"
+                      className={`command-item ${
+                        dragTarget === `command:${command.id}`
+                          ? "drag-target"
+                          : ""
+                      }`}
                       key={command.id}
+                      draggable
+                      data-command-id={command.id}
                       title={command.command}
                       data-command={command.command}
                       onContextMenu={(event) => {
@@ -234,7 +326,54 @@ export function Sidebar({
                           y: event.clientY,
                         });
                       }}
+                      onDragStart={(event) => {
+                        event.stopPropagation();
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData(
+                          "application/x-fz-command",
+                          JSON.stringify({
+                            groupId: group.id,
+                            commandId: command.id,
+                          }),
+                        );
+                      }}
+                      onDragEnd={() => setDragTarget(null)}
+                      onDragOver={(event) => {
+                        if (
+                          !event.dataTransfer.types.includes(
+                            "application/x-fz-command",
+                          )
+                        ) {
+                          return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        event.dataTransfer.dropEffect = "move";
+                        setDragTarget(`command:${command.id}`);
+                      }}
+                      onDragLeave={() =>
+                        setDragTarget((current) =>
+                          current === `command:${command.id}` ? null : current,
+                        )
+                      }
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const payload = readCommandDrag(event.dataTransfer);
+                        if (payload) {
+                          moveCommand(
+                            payload.groupId,
+                            payload.commandId,
+                            group.id,
+                            command.id,
+                          );
+                        }
+                        setDragTarget(null);
+                      }}
                     >
+                      <span className="drag-grip command-drag-grip">
+                        <GripVertical size={12} />
+                      </span>
                       <button
                         className="command-run"
                         type="button"
@@ -246,6 +385,7 @@ export function Sidebar({
                         </span>
                         <span className="command-copy">
                           <strong>{command.name}</strong>
+                          <small>{command.command}</small>
                         </span>
                       </button>
                       <button
@@ -295,10 +435,23 @@ export function Sidebar({
           <button
             className="sidebar-new-folder"
             type="button"
-            onClick={() => setNewGroup("")}
+            onClick={() => {
+              const group = groups[0];
+              if (!group) {
+                setNewGroup("");
+                return;
+              }
+              setCommandModal({
+                mode: "add",
+                groupId: group.id,
+                name: "",
+                command: "",
+                fastExecution: true,
+              });
+            }}
           >
             <Plus size={13} />
-            New folder
+            Add command
           </button>
           <button
             className="sidebar-settings"
@@ -465,4 +618,18 @@ export function Sidebar({
       </Modal>
     </>
   );
+}
+
+function readCommandDrag(dataTransfer: DataTransfer) {
+  try {
+    const value = JSON.parse(
+      dataTransfer.getData("application/x-fz-command"),
+    ) as { groupId?: unknown; commandId?: unknown };
+    return typeof value.groupId === "string" &&
+      typeof value.commandId === "string"
+      ? { groupId: value.groupId, commandId: value.commandId }
+      : null;
+  } catch {
+    return null;
+  }
 }

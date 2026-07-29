@@ -4,11 +4,14 @@ const {
   WebContentsView,
   clipboard,
   ipcMain,
+  session,
   shell,
 } = require("electron");
+const net = require("node:net");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
+const { execFile } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const { autoUpdater } = require("electron-updater");
 const pty = require("node-pty");
@@ -26,6 +29,8 @@ let mainWindow = null;
 let isQuitting = false;
 let updateCheckTimer = null;
 let updateCheckInFlight = false;
+let systemFontCache = null;
+let currentWindowOpacity = 1;
 let updateStatus = {
   state: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
@@ -89,6 +94,76 @@ function migrateLegacyChromiumProfile(targetDirectory, candidates) {
     return candidate;
   }
   return null;
+}
+
+function runFontCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        encoding: "utf8",
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: 12_000,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
+async function listSystemFonts() {
+  if (systemFontCache) return systemFontCache;
+  const bundled = ["Cascadia Code", "DM Mono", "IBM Plex Mono"];
+  let output = "";
+  try {
+    if (process.platform === "win32") {
+      output = await runFontCommand("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name",
+      ]);
+    } else if (process.platform === "darwin") {
+      output = await runFontCommand("system_profiler", [
+        "SPFontsDataType",
+        "-detailLevel",
+        "mini",
+      ]);
+    } else {
+      output = await runFontCommand("fc-list", [
+        "--format=%{family}\\n",
+      ]);
+    }
+  } catch {
+    output = "";
+  }
+
+  const discovered =
+    process.platform === "darwin"
+      ? [...output.matchAll(/^\s*(?:Family|Full Name):\s*(.+)$/gm)].map(
+          (match) => match[1],
+        )
+      : output.split(/\r?\n/);
+  systemFontCache = [
+    ...new Set(
+      [...bundled, ...discovered]
+        .flatMap((value) => value.split(","))
+        .map((value) => value.trim())
+        .filter(
+          (value) =>
+            value.length > 0 &&
+            value.length <= 128 &&
+            !/[\u0000-\u001f]/.test(value),
+        ),
+    ),
+  ].sort((left, right) =>
+    left.localeCompare(right, undefined, { sensitivity: "base" }),
+  );
+  return systemFontCache;
 }
 
 function normalizeProfileEntries(value) {
@@ -494,9 +569,9 @@ function listSessionDirectory(id, requestedDirectory) {
 
 function resolveBrowserUrl(value) {
   const requested = typeof value === "string" ? value.trim() : "";
-  if (!requested) return "https://duckduckgo.com/";
+  if (!requested) return "https://www.google.com/";
   if (/\s/.test(requested)) {
-    return `https://duckduckgo.com/?q=${encodeURIComponent(requested)}`;
+    return `https://www.google.com/search?q=${encodeURIComponent(requested)}`;
   }
   const candidate = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(requested)
     ? requested
@@ -532,6 +607,30 @@ function sendBrowserState(id, entry, error) {
   });
 }
 
+async function applyBrowserViewOpacity(entry) {
+  if (
+    process.platform !== "linux" ||
+    entry.view.webContents.isDestroyed()
+  ) {
+    return;
+  }
+  if (entry.opacityStyleKey) {
+    try {
+      await entry.view.webContents.removeInsertedCSS(entry.opacityStyleKey);
+    } catch {
+      // A navigation may discard the previous document before CSS is removed.
+    }
+  }
+  try {
+    entry.opacityStyleKey = await entry.view.webContents.insertCSS(
+      `:root { opacity: ${currentWindowOpacity} !important; }`,
+      { cssOrigin: "user" },
+    );
+  } catch {
+    entry.opacityStyleKey = null;
+  }
+}
+
 function destroyBrowserView(id, owner) {
   const entry = browserViews.get(id);
   if (!entry || (owner && entry.owner !== owner)) return;
@@ -547,8 +646,17 @@ function destroyBrowserView(id, owner) {
 }
 
 function createBrowserView(event, id, requestedUrl, bounds) {
-  destroyBrowserView(id);
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  const existing = browserViews.get(id);
+  if (
+    existing?.owner === event.sender &&
+    !existing.view.webContents.isDestroyed()
+  ) {
+    existing.view.setBounds(sanitizeBounds(bounds));
+    sendBrowserState(id, existing);
+    return;
+  }
+  destroyBrowserView(id);
 
   const view = new WebContentsView({
     webPreferences: {
@@ -559,15 +667,20 @@ function createBrowserView(event, id, requestedUrl, bounds) {
       partition: "persist:fz-browser",
     },
   });
-  const entry = { view, owner: event.sender };
+  const entry = { view, owner: event.sender, opacityStyleKey: null };
   browserViews.set(id, entry);
-  view.setBackgroundColor("#101217");
+  view.setBackgroundColor(
+    process.platform === "linux" ? "#00000000" : "#101217",
+  );
   view.setBounds(sanitizeBounds(bounds));
   mainWindow.contentView.addChildView(view);
 
   const update = () => sendBrowserState(id, entry);
   view.webContents.on("did-start-loading", update);
   view.webContents.on("did-stop-loading", update);
+  view.webContents.on("did-finish-load", () => {
+    void applyBrowserViewOpacity(entry);
+  });
   view.webContents.on("did-navigate", update);
   view.webContents.on("did-navigate-in-page", update);
   view.webContents.on("page-title-updated", update);
@@ -652,7 +765,8 @@ function createWindow() {
     minHeight: 580,
     show: false,
     frame: false,
-    backgroundColor: "#101217",
+    transparent: true,
+    backgroundColor: "#00000000",
     title: "FZ Terminal",
     icon: path.join(__dirname, "..", "build", "icon.png"),
     webPreferences: {
@@ -697,6 +811,12 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session
+    .fromPartition("persist:fz-browser")
+    .setCertificateVerifyProc((request, callback) => {
+      callback(isPrivateNetworkIp(request.hostname) ? 0 : -3);
+    });
+
   ipcMain.on("window:minimize", () => mainWindow?.minimize());
   ipcMain.on("window:toggle-maximize", () => {
     if (!mainWindow) return;
@@ -704,7 +824,18 @@ app.whenReady().then(() => {
     else mainWindow.maximize();
   });
   ipcMain.on("window:close", () => mainWindow?.close());
+  ipcMain.on("window:set-opacity", (_event, value) => {
+    if (!mainWindow || !Number.isFinite(value)) return;
+    const opacity = Math.min(1, Math.max(0.2, Number(value)));
+    currentWindowOpacity = opacity;
+    mainWindow.setBackgroundColor("#00000000");
+    mainWindow.setOpacity(opacity);
+    for (const entry of browserViews.values()) {
+      void applyBrowserViewOpacity(entry);
+    }
+  });
   ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
+  ipcMain.handle("fonts:list", listSystemFonts);
 
   ipcMain.handle("pty:create", createTerminalSession);
   ipcMain.on("pty:input", (_event, { id, data }) => {
@@ -726,7 +857,7 @@ app.whenReady().then(() => {
   ipcMain.handle("pty:get-context", (_event, id) => getSessionContext(id));
 
   ipcMain.handle("clipboard:read", () => clipboard.readText());
-  ipcMain.on("clipboard:write", (_event, text) => {
+  ipcMain.handle("clipboard:write", (_event, text) => {
     if (typeof text === "string") clipboard.writeText(text);
   });
 
@@ -813,6 +944,34 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+function isPrivateNetworkIp(hostname) {
+  const normalized = String(hostname || "")
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .toLowerCase();
+  const version = net.isIP(normalized);
+  if (version === 4) {
+    const [first, second] = normalized.split(".").map(Number);
+    return (
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
+  }
+  return (
+    version === 6 &&
+    (normalized === "::1" ||
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      normalized.startsWith("fe8") ||
+      normalized.startsWith("fe9") ||
+      normalized.startsWith("fea") ||
+      normalized.startsWith("feb"))
+  );
+}
 
 app.on("before-quit", () => {
   isQuitting = true;

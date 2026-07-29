@@ -14,19 +14,37 @@ import type {
   ThemeId,
   Workspace,
 } from "../types";
+import { fonts, paletteFromTheme, themes } from "../lib/themes";
 
 const createId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 export const shortcutLabels: Record<ShortcutAction, string> = {
   newTab: "New tab",
   closeTab: "Close tab",
+  nextTab: "Next tab",
+  previousTab: "Previous tab",
+  activateTab1: "Switch to tab 1",
+  activateTab2: "Switch to tab 2",
+  activateTab3: "Switch to tab 3",
+  activateTab4: "Switch to tab 4",
+  activateTab5: "Switch to tab 5",
+  activateTab6: "Switch to tab 6",
+  activateTab7: "Switch to tab 7",
+  activateTab8: "Switch to tab 8",
+  activateLastTab: "Switch to last tab",
   newWorkspace: "New workspace",
   nextWorkspace: "Next workspace",
   previousWorkspace: "Previous workspace",
   splitHorizontal: "Split left / right",
   splitVertical: "Split top / bottom",
   closePane: "Close pane",
+  focusPaneLeft: "Focus pane left",
+  focusPaneRight: "Focus pane right",
+  focusPaneUp: "Focus pane above",
+  focusPaneDown: "Focus pane below",
+  toggleMaximizePane: "Maximize active pane",
   toggleSidebar: "Toggle sidebar",
+  commandPalette: "Quick command palette",
   openSettings: "Open settings",
   searchTerminal: "Search terminal",
   copyTerminal: "Copy terminal selection",
@@ -35,6 +53,9 @@ export const shortcutLabels: Record<ShortcutAction, string> = {
   clearInput: "Clear current input",
   clearTerminal: "Clear terminal",
   showCompletions: "Show file completions",
+  zoomIn: "Increase terminal font",
+  zoomOut: "Decrease terminal font",
+  resetFontSize: "Reset terminal font",
 };
 
 export const defaultSettings: AppSettings = {
@@ -46,17 +67,27 @@ export const defaultSettings: AppSettings = {
   appearance: {
     theme: "neon-violet",
     font: "cascadia",
+    uiFontFamily: "system-ui",
+    terminalFontFamily: "Cascadia Code",
     fontSize: 14,
     lineHeight: 1.25,
     opacity: 1,
-    uiFontSize: 11,
+    interfaceOpacity: 1,
+    uiFontSize: 14,
+    cornerRadius: 5,
+    panelGap: 0,
+    interfaceBlur: 18,
+    showBackgroundGrid: false,
+    highContrastText: false,
+    advancedColors: false,
+    customPalette: paletteFromTheme(themes["neon-violet"]),
   },
   terminal: {
     shell: "",
     scrollback: 100_000,
     cursorStyle: "block",
     cursorBlink: true,
-    copyOnSelect: false,
+    copyOnSelect: true,
     screenScrollMode: false,
     fileCompletion: true,
     searchHighlightAll: true,
@@ -64,23 +95,92 @@ export const defaultSettings: AppSettings = {
   },
   shortcuts: {
     newTab: "Primary+Shift+T",
-    closeTab: "Primary+W",
+    closeTab: "Primary+Shift+W",
+    nextTab: "Primary+PageDown",
+    previousTab: "Primary+PageUp",
+    activateTab1: "Primary+Digit1",
+    activateTab2: "Primary+Digit2",
+    activateTab3: "Primary+Digit3",
+    activateTab4: "Primary+Digit4",
+    activateTab5: "Primary+Digit5",
+    activateTab6: "Primary+Digit6",
+    activateTab7: "Primary+Digit7",
+    activateTab8: "Primary+Digit8",
+    activateLastTab: "Primary+Digit9",
     newWorkspace: "Primary+Shift+N",
-    nextWorkspace: "Primary+Alt+ArrowRight",
-    previousWorkspace: "Primary+Alt+ArrowLeft",
-    splitHorizontal: "Primary+Alt+H",
-    splitVertical: "Primary+Alt+V",
+    nextWorkspace: "Primary+Alt+Shift+ArrowRight",
+    previousWorkspace: "Primary+Alt+Shift+ArrowLeft",
+    splitHorizontal: "Primary+Shift+D",
+    splitVertical: "Primary+Shift+E",
     closePane: "Primary+Shift+W",
-    toggleSidebar: "Primary+B",
+    focusPaneLeft: "Primary+Alt+ArrowLeft",
+    focusPaneRight: "Primary+Alt+ArrowRight",
+    focusPaneUp: "Primary+Alt+ArrowUp",
+    focusPaneDown: "Primary+Alt+ArrowDown",
+    toggleMaximizePane: "Primary+Shift+Enter",
+    toggleSidebar: "Primary+Shift+B",
+    commandPalette: "Primary+Shift+P",
     openSettings: "Primary+,",
-    searchTerminal: "Primary+F",
-    copyTerminal: "Primary+C",
-    pasteTerminal: "Primary+V",
-    sendInterrupt: "Primary+Alt+C",
-    clearInput: "Primary+K",
-    clearTerminal: "Primary+L",
+    searchTerminal: "Primary+Shift+F",
+    copyTerminal: "Primary+Shift+C",
+    pasteTerminal: "Primary+Shift+V",
+    sendInterrupt: "Ctrl+C",
+    clearInput: "Ctrl+U",
+    clearTerminal: "Ctrl+L",
     showCompletions: "Primary+Space",
+    zoomIn: "Primary+Equal",
+    zoomOut: "Primary+Minus",
+    resetFontSize: "Primary+Digit0",
   },
+};
+
+const versionSevenShortcutDefaults: Partial<
+  Record<ShortcutAction, string>
+> = {
+  newTab: "Primary+Shift+T",
+  closeTab: "Primary+Shift+W",
+  nextTab: "Primary+Tab",
+  previousTab: "Primary+Shift+Tab",
+  newWorkspace: "Primary+Shift+N",
+  nextWorkspace: "Primary+Alt+ArrowRight",
+  previousWorkspace: "Primary+Alt+ArrowLeft",
+  splitHorizontal: "Primary+Alt+H",
+  splitVertical: "Primary+Alt+V",
+  closePane: "Primary+Alt+W",
+  toggleSidebar: "Primary+B",
+  openSettings: "Primary+,",
+  searchTerminal: "Primary+Shift+F",
+  copyTerminal: "Primary+Shift+C",
+  pasteTerminal: "Primary+Shift+V",
+  sendInterrupt: "Ctrl+C",
+  clearInput: "Ctrl+U",
+  clearTerminal: "Ctrl+L",
+  showCompletions: "Primary+Space",
+  zoomIn: "Primary+Equal",
+  zoomOut: "Primary+Minus",
+  resetFontSize: "Primary+Digit0",
+};
+
+const previousShortcutDefaults: Partial<
+  Record<ShortcutAction, string>
+> = {
+  newTab: "Primary+Shift+T",
+  closeTab: "Primary+W",
+  newWorkspace: "Primary+Shift+N",
+  nextWorkspace: "Primary+Alt+ArrowRight",
+  previousWorkspace: "Primary+Alt+ArrowLeft",
+  splitHorizontal: "Primary+Alt+H",
+  splitVertical: "Primary+Alt+V",
+  closePane: "Primary+Shift+W",
+  toggleSidebar: "Primary+B",
+  openSettings: "Primary+,",
+  searchTerminal: "Primary+F",
+  copyTerminal: "Primary+C",
+  pasteTerminal: "Primary+V",
+  sendInterrupt: "Primary+Alt+C",
+  clearInput: "Primary+K",
+  clearTerminal: "Primary+L",
+  showCompletions: "Primary+Space",
 };
 
 const defaultCommands: CommandGroup[] = [
@@ -163,7 +263,7 @@ function createTab(options: NewTabOptions = {}): TerminalTab {
     activePaneId: pane.id,
     browserUrl:
       kind === "browser"
-        ? options.browserUrl ?? "https://duckduckgo.com/"
+        ? options.browserUrl ?? "https://www.google.com/"
         : undefined,
     filePath: kind === "files" ? options.filePath ?? "~" : undefined,
     noteContent: kind === "note" ? options.noteContent ?? "" : undefined,
@@ -227,6 +327,24 @@ export function firstPane(node: SplitNode): SplitNode & { type: "pane" } {
   return node.type === "pane" ? node : firstPane(node.first);
 }
 
+function moveBefore<T extends { id: string }>(
+  items: T[],
+  sourceId: string,
+  targetId: string,
+) {
+  if (sourceId === targetId) return items;
+  const source = items.find((item) => item.id === sourceId);
+  if (!source) return items;
+  const withoutSource = items.filter((item) => item.id !== sourceId);
+  const targetIndex = withoutSource.findIndex((item) => item.id === targetId);
+  if (targetIndex < 0) return [...withoutSource, source];
+  return [
+    ...withoutSource.slice(0, targetIndex),
+    source,
+    ...withoutSource.slice(targetIndex),
+  ];
+}
+
 function updateNodeRatio(
   node: SplitNode,
   splitId: string,
@@ -253,6 +371,7 @@ interface AppStore {
   addWorkspace: () => { workspaceId: string; paneId: string };
   renameWorkspace: (workspaceId: string, name: string) => void;
   closeWorkspace: (workspaceId: string) => void;
+  moveWorkspace: (sourceId: string, targetId: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
   addTab: (
     workspaceId: string,
@@ -265,6 +384,7 @@ interface AppStore {
   ) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   closeTab: (workspaceId: string, tabId: string) => void;
+  moveTab: (workspaceId: string, sourceId: string, targetId: string) => void;
   setActivePane: (workspaceId: string, tabId: string, paneId: string) => void;
   splitPane: (
     workspaceId: string,
@@ -289,6 +409,7 @@ interface AppStore {
   addCommandGroup: (name: string) => void;
   renameCommandGroup: (groupId: string, name: string) => void;
   removeCommandGroup: (groupId: string) => void;
+  moveCommandGroup: (sourceId: string, targetId: string) => void;
   addCommand: (groupId: string, command: Omit<QuickCommand, "id">) => void;
   updateCommand: (
     groupId: string,
@@ -296,6 +417,12 @@ interface AppStore {
     command: Omit<QuickCommand, "id">,
   ) => void;
   removeCommand: (groupId: string, commandId: string) => void;
+  moveCommand: (
+    sourceGroupId: string,
+    commandId: string,
+    targetGroupId: string,
+    targetCommandId?: string,
+  ) => void;
   setTheme: (theme: ThemeId) => void;
   setFont: (font: FontId) => void;
 }
@@ -316,7 +443,7 @@ export const useAppStore = create<AppStore>()(
       activeWorkspaceId: initialWorkspace.id,
       commandGroups: defaultCommands,
       settings: defaultSettings,
-      sidebarVisible: false,
+      sidebarVisible: true,
 
       setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId }),
 
@@ -361,6 +488,11 @@ export const useAppStore = create<AppStore>()(
                 : state.activeWorkspaceId,
           };
         }),
+
+      moveWorkspace: (sourceId, targetId) =>
+        set((state) => ({
+          workspaces: moveBefore(state.workspaces, sourceId, targetId),
+        })),
 
       setActiveTab: (workspaceId, activeTabId) =>
         set((state) => ({
@@ -449,6 +581,18 @@ export const useAppStore = create<AppStore>()(
                   : workspace.activeTabId,
             };
           }),
+        })),
+
+      moveTab: (workspaceId, sourceId, targetId) =>
+        set((state) => ({
+          workspaces: state.workspaces.map((workspace) =>
+            workspace.id === workspaceId
+              ? {
+                  ...workspace,
+                  tabs: moveBefore(workspace.tabs, sourceId, targetId),
+                }
+              : workspace,
+          ),
         })),
 
       setActivePane: (workspaceId, tabId, activePaneId) =>
@@ -607,6 +751,15 @@ export const useAppStore = create<AppStore>()(
           ),
         })),
 
+      moveCommandGroup: (sourceId, targetId) =>
+        set((state) => ({
+          commandGroups: moveBefore(
+            state.commandGroups,
+            sourceId,
+            targetId,
+          ),
+        })),
+
       addCommand: (groupId, command) =>
         set((state) => ({
           commandGroups: state.commandGroups.map((group) =>
@@ -650,15 +803,56 @@ export const useAppStore = create<AppStore>()(
           ),
         })),
 
+      moveCommand: (
+        sourceGroupId,
+        commandId,
+        targetGroupId,
+        targetCommandId,
+      ) =>
+        set((state) => {
+          const command = state.commandGroups
+            .find((group) => group.id === sourceGroupId)
+            ?.commands.find((item) => item.id === commandId);
+          if (!command) return state;
+          const withoutCommand = state.commandGroups.map((group) => ({
+            ...group,
+            commands: group.commands.filter((item) => item.id !== commandId),
+          }));
+          return {
+            commandGroups: withoutCommand.map((group) => {
+              if (group.id !== targetGroupId) return group;
+              const targetIndex = targetCommandId
+                ? group.commands.findIndex(
+                    (item) => item.id === targetCommandId,
+                  )
+                : -1;
+              const index =
+                targetIndex < 0 ? group.commands.length : targetIndex;
+              return {
+                ...group,
+                expanded: true,
+                commands: [
+                  ...group.commands.slice(0, index),
+                  command,
+                  ...group.commands.slice(index),
+                ],
+              };
+            }),
+          };
+        }),
+
       setTheme: (theme: ThemeId) =>
         get().updateAppearance({ theme }),
 
       setFont: (font: FontId) =>
-        get().updateAppearance({ font }),
+        get().updateAppearance({
+          font,
+          terminalFontFamily: fonts[font].label,
+        }),
     }),
     {
       name: "fz-terminal-state",
-      version: 5,
+      version: 9,
       migrate: (persistedState, version) => {
         const saved = persistedState as PersistedAppState;
         const migrated =
@@ -677,7 +871,7 @@ export const useAppStore = create<AppStore>()(
         const withSidebar = version < 4
           ? { ...migrated, sidebarVisible: false }
           : migrated;
-        return version < 5
+        const withScrollback = version < 5
           ? {
               ...withSidebar,
               settings: {
@@ -692,6 +886,120 @@ export const useAppStore = create<AppStore>()(
               },
             }
           : withSidebar;
+        const withShortcuts =
+          version >= 6
+            ? withScrollback
+            : {
+                ...withScrollback,
+                settings: {
+                  ...withScrollback.settings,
+                  shortcuts: Object.fromEntries(
+                    (
+                      Object.keys(
+                        defaultSettings.shortcuts,
+                      ) as ShortcutAction[]
+                    ).map((action) => {
+                      const savedValue =
+                        withScrollback.settings.shortcuts?.[action];
+                      const legacyDefault =
+                        previousShortcutDefaults[action];
+                      return [
+                        action,
+                        savedValue === undefined ||
+                        savedValue === legacyDefault
+                          ? defaultSettings.shortcuts[action]
+                          : savedValue,
+                      ];
+                    }),
+                  ) as Record<ShortcutAction, string>,
+                },
+              };
+        const withAppearance =
+          version >= 7
+            ? withShortcuts
+            : (() => {
+                const savedAppearance = withShortcuts.settings.appearance;
+                const selectedTheme =
+                  themes[savedAppearance.theme] ?? themes["neon-violet"];
+                return {
+                  ...withShortcuts,
+                  settings: {
+                    ...withShortcuts.settings,
+                    appearance: {
+                      ...defaultSettings.appearance,
+                      ...savedAppearance,
+                      uiFontSize:
+                        savedAppearance.uiFontSize === undefined ||
+                        savedAppearance.uiFontSize === 11
+                          ? 14
+                          : savedAppearance.uiFontSize,
+                      uiFontFamily:
+                        savedAppearance.uiFontFamily ?? "system-ui",
+                      terminalFontFamily:
+                        savedAppearance.terminalFontFamily ??
+                        fonts[savedAppearance.font ?? "cascadia"].label,
+                      customPalette: {
+                        ...paletteFromTheme(selectedTheme),
+                        ...savedAppearance.customPalette,
+                      },
+                    },
+                  },
+                };
+              })();
+        const withWarpDefaults =
+          version >= 8
+            ? withAppearance
+            : (() => {
+                const withBrowserDefault = {
+                  ...withAppearance,
+                  workspaces: withAppearance.workspaces.map((workspace) => ({
+                    ...workspace,
+                    tabs: workspace.tabs.map((tab) =>
+                      tab.kind === "browser" &&
+                      (tab.browserUrl === "https://duckduckgo.com/" ||
+                        tab.browserUrl === "https://duckduckgo.com")
+                        ? { ...tab, browserUrl: "https://www.google.com/" }
+                        : tab,
+                    ),
+                  })),
+                };
+                return {
+                  ...withBrowserDefault,
+                  settings: {
+                    ...withBrowserDefault.settings,
+                    shortcuts: Object.fromEntries(
+                      (
+                        Object.keys(
+                          defaultSettings.shortcuts,
+                        ) as ShortcutAction[]
+                      ).map((action) => {
+                        const savedValue =
+                          withBrowserDefault.settings.shortcuts?.[action];
+                        const oldDefault =
+                          versionSevenShortcutDefaults[action];
+                        return [
+                          action,
+                          savedValue === undefined ||
+                          savedValue === oldDefault
+                            ? defaultSettings.shortcuts[action]
+                            : savedValue,
+                        ];
+                      }),
+                    ) as Record<ShortcutAction, string>,
+                  },
+                };
+              })();
+        if (version >= 9) return withWarpDefaults;
+        return {
+          ...withWarpDefaults,
+          settings: {
+            ...withWarpDefaults.settings,
+            terminal: {
+              ...withWarpDefaults.settings.terminal,
+              copyOnSelect: true,
+            },
+          },
+        };
       },
       partialize: (state) => ({
         workspaces: state.settings.general.restoreSession
@@ -715,6 +1023,10 @@ export const useAppStore = create<AppStore>()(
               appearance: {
                 ...current.settings.appearance,
                 ...saved.settings.appearance,
+                customPalette: {
+                  ...current.settings.appearance.customPalette,
+                  ...saved.settings.appearance.customPalette,
+                },
               },
               terminal: {
                 ...current.settings.terminal,

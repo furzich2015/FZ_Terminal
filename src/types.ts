@@ -65,20 +65,72 @@ export type ThemeId =
   | "midnight"
   | "graphite"
   | "daylight"
-  | "ocean";
+  | "ocean"
+  | "matrix"
+  | "tokyo-night"
+  | "gruvbox"
+  | "rose-pine";
 export type FontId = "cascadia" | "ibm-plex" | "dm-mono";
 export type CursorStyle = "block" | "underline" | "bar";
+
+export interface CustomPalette {
+  app: string;
+  titlebar: string;
+  sidebar: string;
+  surface: string;
+  elevated: string;
+  hover: string;
+  border: string;
+  borderStrong: string;
+  text: string;
+  textMuted: string;
+  textFaint: string;
+  accent: string;
+  accentHover: string;
+  danger: string;
+  warning: string;
+  success: string;
+  terminalBackground: string;
+  terminalForeground: string;
+  terminalCursor: string;
+  terminalSelection: string;
+  ansiBlack: string;
+  ansiRed: string;
+  ansiGreen: string;
+  ansiYellow: string;
+  ansiBlue: string;
+  ansiMagenta: string;
+  ansiCyan: string;
+  ansiWhite: string;
+}
 
 export type ShortcutAction =
   | "newTab"
   | "closeTab"
+  | "nextTab"
+  | "previousTab"
+  | "activateTab1"
+  | "activateTab2"
+  | "activateTab3"
+  | "activateTab4"
+  | "activateTab5"
+  | "activateTab6"
+  | "activateTab7"
+  | "activateTab8"
+  | "activateLastTab"
   | "newWorkspace"
   | "nextWorkspace"
   | "previousWorkspace"
   | "splitHorizontal"
   | "splitVertical"
   | "closePane"
+  | "focusPaneLeft"
+  | "focusPaneRight"
+  | "focusPaneUp"
+  | "focusPaneDown"
+  | "toggleMaximizePane"
   | "toggleSidebar"
+  | "commandPalette"
   | "openSettings"
   | "searchTerminal"
   | "copyTerminal"
@@ -86,7 +138,10 @@ export type ShortcutAction =
   | "sendInterrupt"
   | "clearInput"
   | "clearTerminal"
-  | "showCompletions";
+  | "showCompletions"
+  | "zoomIn"
+  | "zoomOut"
+  | "resetFontSize";
 
 export interface AppSettings {
   general: {
@@ -97,10 +152,20 @@ export interface AppSettings {
   appearance: {
     theme: ThemeId;
     font: FontId;
+    uiFontFamily: string;
+    terminalFontFamily: string;
     fontSize: number;
     lineHeight: number;
     opacity: number;
+    interfaceOpacity: number;
     uiFontSize: number;
+    cornerRadius: number;
+    panelGap: number;
+    interfaceBlur: number;
+    showBackgroundGrid: boolean;
+    highContrastText: boolean;
+    advancedColors: boolean;
+    customPalette: CustomPalette;
   };
   terminal: {
     shell: string;
@@ -246,8 +311,12 @@ export interface FzTerminalBridge {
     minimize: () => void;
     toggleMaximize: () => void;
     close: () => void;
+    setOpacity: (value: number) => void;
     isMaximized: () => Promise<boolean>;
     onMaximized: (callback: (value: boolean) => void) => () => void;
+  };
+  fonts: {
+    list: () => Promise<string[]>;
   };
   pty: {
     create: (options: PtyCreateOptions) => Promise<PtyCreateResult>;
@@ -264,7 +333,7 @@ export interface FzTerminalBridge {
   };
   clipboard: {
     readText: () => Promise<string>;
-    writeText: (text: string) => void;
+    writeText: (text: string) => Promise<void>;
   };
   browser: {
     create: (id: string, url: string, bounds: BrowserBounds) => Promise<void>;

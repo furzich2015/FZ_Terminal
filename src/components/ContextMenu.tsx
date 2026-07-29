@@ -2,7 +2,7 @@ import {
   ChevronRight,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { MenuPosition } from "../types";
 
@@ -30,6 +30,9 @@ export function ContextMenu({
   items,
   onClose,
 }: ContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [resolvedPosition, setResolvedPosition] = useState(position);
+
   useEffect(() => {
     if (!open) return;
     window.dispatchEvent(
@@ -52,15 +55,29 @@ export function ContextMenu({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const margin = 8;
+    setResolvedPosition({
+      x: Math.max(
+        margin,
+        Math.min(position.x, window.innerWidth - rect.width - margin),
+      ),
+      y: Math.max(
+        margin,
+        Math.min(position.y, window.innerHeight - rect.height - margin),
+      ),
+    });
+  }, [open, position.x, position.y]);
 
-  const safeX = Math.min(position.x, window.innerWidth - 250);
-  const safeY = Math.min(position.y, window.innerHeight - 360);
+  if (!open) return null;
 
   return createPortal(
     <div
       className="context-menu"
-      style={{ left: Math.max(8, safeX), top: Math.max(8, safeY) }}
+      ref={menuRef}
+      style={{ left: resolvedPosition.x, top: resolvedPosition.y }}
       role="menu"
       onPointerDown={(event) => event.stopPropagation()}
     >
