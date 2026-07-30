@@ -137,13 +137,11 @@ export function TabBar({
         {
           label: "Split left / right",
           icon: SplitSquareHorizontal,
-          disabled: target.kind !== "terminal",
           action: onSplitHorizontal,
         },
         {
           label: "Split top / bottom",
           icon: SplitSquareVertical,
-          disabled: target.kind !== "terminal",
           action: onSplitVertical,
         },
         { separator: true },
@@ -299,9 +297,6 @@ export function TabBar({
             <button
               className="toolbar-button with-label"
               type="button"
-              disabled={workspace.tabs.find(
-                (tab) => tab.id === workspace.activeTabId,
-              )?.kind !== "terminal"}
               onClick={onSplitHorizontal}
             >
               <SplitSquareHorizontal size={13} />
@@ -311,9 +306,6 @@ export function TabBar({
               className="toolbar-button"
               type="button"
               title="Split top / bottom"
-              disabled={workspace.tabs.find(
-                (tab) => tab.id === workspace.activeTabId,
-              )?.kind !== "terminal"}
               onClick={onSplitVertical}
             >
               <SplitSquareVertical size={13} />

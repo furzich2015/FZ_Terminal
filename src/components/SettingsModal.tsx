@@ -31,6 +31,7 @@ import {
   useAppStore,
 } from "../store/appStore";
 import { Modal } from "./Modal";
+import { SelectMenu } from "./DropdownMenu";
 import { Toggle } from "./Toggle";
 
 export type SettingsSection =
@@ -554,18 +555,20 @@ export function SettingsModal({
               </SettingsGroup>
               <SettingsGroup title="Display">
                 <SettingRow label="Cursor style">
-                  <select
+                  <SelectMenu
                     value={settings.terminal.cursorStyle}
-                    onChange={(event) =>
+                    ariaLabel="Cursor style"
+                    options={[
+                      { value: "block", label: "Block" },
+                      { value: "bar", label: "Bar" },
+                      { value: "underline", label: "Underline" },
+                    ]}
+                    onChange={(cursorStyle) =>
                       updateTerminal({
-                        cursorStyle: event.target.value as CursorStyle,
+                        cursorStyle: cursorStyle as CursorStyle,
                       })
                     }
-                  >
-                    <option value="block">Block</option>
-                    <option value="bar">Bar</option>
-                    <option value="underline">Underline</option>
-                  </select>
+                  />
                 </SettingRow>
                 <Toggle
                   checked={settings.terminal.cursorBlink}

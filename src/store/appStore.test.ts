@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CommandGroup, SplitNode, Workspace } from "../types";
 import {
+  collectBrowserPaneIds,
   collectSessionIds,
   defaultSettings,
   removePane,
@@ -28,6 +29,28 @@ describe("split tree", () => {
     const root = splitNode(pane("one"), "one", "vertical", next);
 
     expect(removePane(root, "one")).toEqual(next);
+  });
+
+  it("tracks terminal and browser resources independently in mixed splits", () => {
+    const browser: SplitNode & { type: "pane" } = {
+      type: "pane",
+      id: "browser-one",
+      sessionId: "unused-browser-session",
+      kind: "browser",
+      browserUrl: "https://example.com/",
+      browserTabs: [
+        { id: "browser-page-one", url: "https://example.com/" },
+        { id: "browser-page-two", url: "https://example.org/" },
+      ],
+      activeBrowserTabId: "browser-page-one",
+    };
+    const root = splitNode(pane("terminal"), "terminal", "horizontal", browser);
+
+    expect(collectSessionIds(root)).toEqual(["session-terminal"]);
+    expect(collectBrowserPaneIds(root)).toEqual([
+      "browser-page-one",
+      "browser-page-two",
+    ]);
   });
 });
 

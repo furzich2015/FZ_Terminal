@@ -106,8 +106,7 @@ export function TitleBar({
         <button
           className="toolbar-button"
           type="button"
-          title="Split left / right"
-          disabled={!terminalActive}
+          title="Split active pane left / right"
           onClick={onSplitHorizontal}
         >
           <Columns2 size={14} />

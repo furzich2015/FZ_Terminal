@@ -20,6 +20,7 @@ interface DropdownMenuProps {
   align?: "left" | "right";
   compact?: boolean;
   className?: string;
+  ariaLabel?: string;
 }
 
 export function DropdownMenu({
@@ -30,6 +31,7 @@ export function DropdownMenu({
   align = "left",
   compact = false,
   className = "",
+  ariaLabel,
 }: DropdownMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -57,6 +59,7 @@ export function DropdownMenu({
           open ? "active" : ""
         }`}
         type="button"
+        aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
@@ -100,5 +103,39 @@ export function DropdownMenu({
         </div>
       )}
     </div>
+  );
+}
+
+export function SelectMenu<T extends string>({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  className = "",
+}: {
+  value: T;
+  options: { value: T; label: string; disabled?: boolean }[];
+  onChange: (value: T) => void;
+  ariaLabel: string;
+  className?: string;
+}) {
+  const selected =
+    options.find((option) => option.value === value) ?? options[0];
+  return (
+    <DropdownMenu
+      ariaLabel={ariaLabel}
+      className={`select-menu ${className}`}
+      items={options.map((option) => ({
+        label: option.label,
+        selected: option.value === value,
+        disabled: option.disabled,
+        action: () => onChange(option.value),
+      }))}
+    >
+      <span className="select-menu-value">
+        <span>{selected?.label ?? value}</span>
+        <ChevronDown size={12} />
+      </span>
+    </DropdownMenu>
   );
 }

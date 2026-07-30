@@ -1,12 +1,17 @@
 import { useState } from "react";
-import { StickyNote } from "lucide-react";
+import { Plus, StickyNote } from "lucide-react";
 
 interface NotePaneProps {
   initialContent: string;
   onChange: (value: string) => void;
+  onNewTab?: () => void;
 }
 
-export function NotePane({ initialContent, onChange }: NotePaneProps) {
+export function NotePane({
+  initialContent,
+  onChange,
+  onNewTab,
+}: NotePaneProps) {
   const [content, setContent] = useState(initialContent);
   const lineCount = Math.max(1, content.split("\n").length);
 
@@ -18,6 +23,11 @@ export function NotePane({ initialContent, onChange }: NotePaneProps) {
           Workspace note
         </span>
         <small>{lineCount} lines · saved locally</small>
+        {onNewTab && (
+          <button type="button" title="New note tab" onClick={onNewTab}>
+            <Plus size={13} />
+          </button>
+        )}
       </header>
       <div className="note-editor">
         <div className="note-lines" aria-hidden="true">
