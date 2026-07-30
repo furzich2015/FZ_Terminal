@@ -3,11 +3,25 @@ import type { ITheme } from "@xterm/xterm";
 export type SplitDirection = "horizontal" | "vertical";
 export type TabKind = "terminal" | "browser" | "files" | "note";
 
+export interface BrowserPageTab {
+  id: string;
+  url: string;
+  title?: string;
+}
+
 export type SplitNode =
   | {
       type: "pane";
       id: string;
       sessionId: string;
+      kind?: TabKind;
+      browserUrl?: string;
+      browserTabs?: BrowserPageTab[];
+      activeBrowserTabId?: string;
+      filePath?: string;
+      remoteFilePath?: string;
+      remoteConnectionId?: string;
+      noteContent?: string;
     }
   | {
       type: "split";
@@ -42,6 +56,24 @@ export interface Workspace {
   name: string;
   tabs: TerminalTab[];
   activeTabId: string;
+}
+
+export interface RemoteConnection {
+  id: string;
+  name: string;
+  host: string;
+  user?: string;
+  port: number;
+  rootPath: string;
+  identityFile?: string;
+  workspaceIds: string[];
+  source: "manual" | "detected";
+}
+
+export interface DetectedRemoteConnection {
+  host: string;
+  user?: string;
+  port: number;
 }
 
 export interface QuickCommand {
@@ -253,9 +285,47 @@ export interface DirectoryListing {
   remote?: boolean;
 }
 
+export interface RemoteFileTransferRequest {
+  direction: "upload" | "download";
+  sourcePath: string;
+  targetDirectory: string;
+  directory: boolean;
+  sudoPassword?: string;
+}
+
+export interface RemoteFileTransferResult {
+  direction: "upload" | "download";
+  sourcePath: string;
+  targetDirectory: string;
+}
+
+export interface FileOperationRequest {
+  path: string;
+  connection?: RemoteConnection;
+  sudoPassword?: string;
+}
+
+export interface FileDeleteRequest extends FileOperationRequest {
+  directory: boolean;
+}
+
+export interface FileMoveRequest {
+  sourcePath: string;
+  targetDirectory: string;
+  connection?: RemoteConnection;
+  sudoPassword?: string;
+}
+
+export interface FileReadResult {
+  path: string;
+  content: string;
+  size: number;
+}
+
 export interface PtyContext {
   remote: boolean;
   multiplexer: "screen" | "tmux" | null;
+  connection?: DetectedRemoteConnection;
 }
 
 export interface BrowserBounds {
@@ -345,10 +415,34 @@ export interface FzTerminalBridge {
     setVisible: (id: string, visible: boolean) => void;
     destroy: (id: string) => void;
     onState: (callback: (state: BrowserState) => void) => () => void;
+    onContextMenu: (
+      callback: (value: { id: string; x: number; y: number }) => void,
+    ) => () => void;
   };
   files: {
     home: () => Promise<string>;
     listDirectory: (directory?: string) => Promise<DirectoryListing>;
+    listRemoteDirectory: (
+      connection: RemoteConnection,
+      directory?: string,
+      force?: boolean,
+    ) => Promise<DirectoryListing>;
+    transfer: (
+      connection: RemoteConnection,
+      request: RemoteFileTransferRequest,
+    ) => Promise<RemoteFileTransferResult>;
+    remoteTerminalArgs: (
+      connection: RemoteConnection,
+      command: string,
+    ) => Promise<string[]>;
+    createDirectory: (request: FileOperationRequest) => Promise<{ path: string }>;
+    deleteEntry: (request: FileDeleteRequest) => Promise<{ path: string }>;
+    moveEntry: (request: FileMoveRequest) => Promise<{ path: string }>;
+    readFile: (request: FileOperationRequest) => Promise<FileReadResult>;
+    writeFile: (
+      request: FileOperationRequest & { content: string },
+    ) => Promise<{ path: string; size: number }>;
+    openExternal: (path: string) => Promise<void>;
   };
   profile: {
     load: () => Promise<ProfileBackup>;

@@ -10,7 +10,18 @@ uses Electron, React, TypeScript, xterm.js, and real platform PTYs.
 ## Features
 
 - real bash/zsh/fish/PowerShell sessions through `node-pty`
-- workspaces, tabs, horizontal and vertical splits
+- workspaces, tabs, horizontal and vertical mixed-tool splits
+- terminal, browser, note, and files panes can share the same split tree
+- persisted browser tabs inside each browser pane
+- note tab creation from its pane toolbar
+- dual-column Files view with the local system and a selected SSH server
+- built-in local/remote text editor, external local editor integration, and
+  file actions for create, move, transfer, and delete
+- drag files onto a specific local or remote folder, with recursive SFTP
+  transfers between systems
+- transient sudo authorization for permission-denied file operations;
+  passwords are never persisted
+- saved manual SSH profiles plus automatic discovery from live SSH sessions
 - rename and close actions for tabs and workspaces
 - draggable split dividers
 - command library with folders
@@ -20,6 +31,17 @@ uses Electron, React, TypeScript, xterm.js, and real platform PTYs.
 - persistent layout and preferences
 - shared development/installed profile with an atomic JSON backup
 - in-app updates through GitHub Releases
+
+Remote file browsing uses the system `ssh` client and authenticates through
+the user's SSH config, agent, or an optional absolute identity-file path.
+Passwords are not stored by FZ Terminal. On Unix platforms, directory
+requests reuse one OpenSSH ControlMaster connection instead of reconnecting
+when the user changes tabs or workspaces.
+
+Browser panes use the persistent `persist:fz-browser` Chromium session and a
+standard Chrome-compatible user agent. New browser tabs open Google by
+default. Third-party sites can still require CAPTCHA based on VPN, proxy, or
+public IP reputation.
 
 ## Run
 
@@ -66,14 +88,14 @@ authorization automatically. Direct installation also works, but the `./`
 prefix is required so APT treats it as a local file:
 
 ```bash
-sudo apt install ./release/FZ-Terminal-0.3.2-amd64.deb
+sudo apt install ./release/FZ-Terminal-0.4.0-amd64.deb
 ```
 
 Or run the portable AppImage:
 
 ```bash
-chmod +x ./release/FZ-Terminal-0.3.2-x86_64.AppImage
-./release/FZ-Terminal-0.3.2-x86_64.AppImage
+chmod +x ./release/FZ-Terminal-0.4.0-x86_64.AppImage
+./release/FZ-Terminal-0.4.0-x86_64.AppImage
 ```
 
 Windows and macOS packages produced on Linux are unsigned. Public macOS

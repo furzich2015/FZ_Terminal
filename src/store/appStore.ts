@@ -6,6 +6,7 @@ import type {
   FontId,
   NewTabOptions,
   QuickCommand,
+  RemoteConnection,
   ShortcutAction,
   SplitDirection,
   SplitNode,
@@ -237,11 +238,28 @@ const defaultCommands: CommandGroup[] = [
   },
 ];
 
-function createPane(): SplitNode & { type: "pane" } {
+function createPane(
+  kind: TabKind = "terminal",
+  options: NewTabOptions = {},
+): SplitNode & { type: "pane" } {
+  const paneId = createId("pane");
+  const browserUrl =
+    kind === "browser"
+      ? options.browserUrl ?? "https://www.google.com/"
+      : undefined;
   return {
     type: "pane",
-    id: createId("pane"),
+    id: paneId,
     sessionId: createId("session"),
+    kind,
+    browserUrl,
+    browserTabs:
+      kind === "browser" && browserUrl
+        ? [{ id: paneId, url: browserUrl, title: "New tab" }]
+        : undefined,
+    activeBrowserTabId: kind === "browser" ? paneId : undefined,
+    filePath: kind === "files" ? options.filePath ?? "~" : undefined,
+    noteContent: kind === "note" ? options.noteContent ?? "" : undefined,
   };
 }
 
@@ -254,7 +272,7 @@ const defaultTabNames: Record<TabKind, string> = {
 
 function createTab(options: NewTabOptions = {}): TerminalTab {
   const kind = options.kind ?? "terminal";
-  const pane = createPane();
+  const pane = createPane(kind, options);
   return {
     id: createId("tab"),
     name: options.name ?? defaultTabNames[kind],
@@ -283,11 +301,48 @@ function createWorkspace(name = "Main"): Workspace {
 const initialWorkspace = createWorkspace();
 
 export function collectSessionIds(node: SplitNode): string[] {
-  if (node.type === "pane") return [node.sessionId];
+  if (node.type === "pane") {
+    return !node.kind || node.kind === "terminal" ? [node.sessionId] : [];
+  }
   return [
     ...collectSessionIds(node.first),
     ...collectSessionIds(node.second),
   ];
+}
+
+export function collectBrowserPaneIds(node: SplitNode): string[] {
+  if (node.type === "pane") {
+    return node.kind === "browser"
+      ? node.browserTabs?.map((tab) => tab.id) ?? [node.id]
+      : [];
+  }
+  return [
+    ...collectBrowserPaneIds(node.first),
+    ...collectBrowserPaneIds(node.second),
+  ];
+}
+
+function findPaneNode(
+  node: SplitNode,
+  paneId: string,
+): (SplitNode & { type: "pane" }) | null {
+  if (node.type === "pane") return node.id === paneId ? node : null;
+  return findPaneNode(node.first, paneId) ?? findPaneNode(node.second, paneId);
+}
+
+function updatePaneNode(
+  node: SplitNode,
+  paneId: string,
+  value: Partial<SplitNode & { type: "pane" }>,
+): SplitNode {
+  if (node.type === "pane") {
+    return node.id === paneId ? { ...node, ...value, id: node.id } : node;
+  }
+  return {
+    ...node,
+    first: updatePaneNode(node.first, paneId, value),
+    second: updatePaneNode(node.second, paneId, value),
+  };
 }
 
 export function splitNode(
@@ -365,6 +420,7 @@ interface AppStore {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   commandGroups: CommandGroup[];
+  connections: RemoteConnection[];
   settings: AppSettings;
   sidebarVisible: boolean;
   setActiveWorkspace: (workspaceId: string) => void;
@@ -386,11 +442,29 @@ interface AppStore {
   closeTab: (workspaceId: string, tabId: string) => void;
   moveTab: (workspaceId: string, sourceId: string, targetId: string) => void;
   setActivePane: (workspaceId: string, tabId: string, paneId: string) => void;
+  updatePane: (
+    workspaceId: string,
+    tabId: string,
+    paneId: string,
+    value: Partial<
+      Pick<
+        SplitNode & { type: "pane" },
+        | "browserUrl"
+        | "browserTabs"
+        | "activeBrowserTabId"
+        | "filePath"
+        | "remoteFilePath"
+        | "remoteConnectionId"
+        | "noteContent"
+      >
+    >,
+  ) => void;
   splitPane: (
     workspaceId: string,
     tabId: string,
     paneId: string,
     direction: SplitDirection,
+    kind?: TabKind,
   ) => string;
   closePane: (workspaceId: string, tabId: string, paneId: string) => void;
   setSplitRatio: (
@@ -400,6 +474,16 @@ interface AppStore {
     ratio: number,
   ) => void;
   setSidebarVisible: (value: boolean) => void;
+  saveConnection: (
+    value: Omit<RemoteConnection, "id" | "workspaceIds" | "source"> & {
+      id?: string;
+    },
+  ) => string;
+  upsertDetectedConnection: (
+    workspaceId: string,
+    value: Pick<RemoteConnection, "host" | "user" | "port">,
+  ) => string;
+  removeConnection: (connectionId: string) => void;
   updateGeneral: (value: Partial<AppSettings["general"]>) => void;
   updateAppearance: (value: Partial<AppSettings["appearance"]>) => void;
   updateTerminal: (value: Partial<AppSettings["terminal"]>) => void;
@@ -432,6 +516,7 @@ type PersistedAppState = Pick<
   | "workspaces"
   | "activeWorkspaceId"
   | "commandGroups"
+  | "connections"
   | "settings"
   | "sidebarVisible"
 >;
@@ -442,6 +527,7 @@ export const useAppStore = create<AppStore>()(
       workspaces: [initialWorkspace],
       activeWorkspaceId: initialWorkspace.id,
       commandGroups: defaultCommands,
+      connections: [],
       settings: defaultSettings,
       sidebarVisible: true,
 
@@ -609,8 +695,43 @@ export const useAppStore = create<AppStore>()(
           ),
         })),
 
-      splitPane: (workspaceId, tabId, paneId, direction) => {
-        const pane = createPane();
+      updatePane: (workspaceId, tabId, paneId, value) =>
+        set((state) => ({
+          workspaces: state.workspaces.map((workspace) =>
+            workspace.id === workspaceId
+              ? {
+                  ...workspace,
+                  tabs: workspace.tabs.map((tab) =>
+                    tab.id === tabId
+                      ? {
+                          ...tab,
+                          ...("browserUrl" in value
+                            ? { browserUrl: value.browserUrl }
+                            : {}),
+                          ...("filePath" in value
+                            ? { filePath: value.filePath }
+                            : {}),
+                          ...("noteContent" in value
+                            ? { noteContent: value.noteContent }
+                            : {}),
+                          root: updatePaneNode(tab.root, paneId, value),
+                        }
+                      : tab,
+                  ),
+                }
+              : workspace,
+          ),
+        })),
+
+      splitPane: (workspaceId, tabId, paneId, direction, requestedKind) => {
+        const sourceTab = get()
+          .workspaces.find((workspace) => workspace.id === workspaceId)
+          ?.tabs.find((tab) => tab.id === tabId);
+        const sourcePane = sourceTab
+          ? findPaneNode(sourceTab.root, paneId)
+          : null;
+        const kind = requestedKind ?? sourcePane?.kind ?? sourceTab?.kind ?? "terminal";
+        const pane = createPane(kind);
         set((state) => ({
           workspaces: state.workspaces.map((workspace) =>
             workspace.id === workspaceId
@@ -672,6 +793,86 @@ export const useAppStore = create<AppStore>()(
         })),
 
       setSidebarVisible: (sidebarVisible) => set({ sidebarVisible }),
+
+      saveConnection: (value) => {
+        const id = value.id ?? createId("connection");
+        set((state) => {
+          const connection: RemoteConnection = {
+            id,
+            name: value.name.trim() || value.host.trim(),
+            host: value.host.trim(),
+            user: value.user?.trim() || undefined,
+            port: Math.min(65535, Math.max(1, Math.round(value.port || 22))),
+            rootPath: value.rootPath.trim() || "~",
+            identityFile: value.identityFile?.trim() || undefined,
+            workspaceIds:
+              state.connections.find((item) => item.id === id)?.workspaceIds ??
+              [],
+            source: "manual",
+          };
+          const exists = state.connections.some((item) => item.id === id);
+          return {
+            connections: exists
+              ? state.connections.map((item) =>
+                  item.id === id ? connection : item,
+                )
+              : [...state.connections, connection],
+          };
+        });
+        return id;
+      },
+
+      upsertDetectedConnection: (workspaceId, value) => {
+        const normalizedUser = value.user?.trim() || undefined;
+        const normalizedPort = value.port || 22;
+        const existing = get().connections.find(
+          (item) =>
+            item.host === value.host &&
+            item.user === normalizedUser &&
+            item.port === normalizedPort,
+        );
+        if (existing) {
+          if (!existing.workspaceIds.includes(workspaceId)) {
+            set((state) => ({
+              connections: state.connections.map((item) =>
+                item.id === existing.id
+                  ? {
+                      ...item,
+                      workspaceIds: [...item.workspaceIds, workspaceId],
+                    }
+                  : item,
+              ),
+            }));
+          }
+          return existing.id;
+        }
+        const id = createId("connection");
+        set((state) => ({
+          connections: [
+            ...state.connections,
+            {
+              id,
+              name: normalizedUser
+                ? `${normalizedUser}@${value.host}`
+                : value.host,
+              host: value.host,
+              user: normalizedUser,
+              port: normalizedPort,
+              rootPath: "~",
+              workspaceIds: [workspaceId],
+              source: "detected",
+            },
+          ],
+        }));
+        return id;
+      },
+
+      removeConnection: (connectionId) =>
+        set((state) => ({
+          connections: state.connections.filter(
+            (connection) => connection.id !== connectionId,
+          ),
+        })),
 
       updateGeneral: (value) =>
         set((state) => ({
@@ -852,7 +1053,7 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: "fz-terminal-state",
-      version: 9,
+      version: 11,
       migrate: (persistedState, version) => {
         const saved = persistedState as PersistedAppState;
         const migrated =
@@ -989,16 +1190,83 @@ export const useAppStore = create<AppStore>()(
                   },
                 };
               })();
-        if (version >= 9) return withWarpDefaults;
+        const withCopyOnSelect =
+          version >= 9
+            ? withWarpDefaults
+            : {
+                ...withWarpDefaults,
+                settings: {
+                  ...withWarpDefaults.settings,
+                  terminal: {
+                    ...withWarpDefaults.settings.terminal,
+                    copyOnSelect: true,
+                  },
+                },
+              };
+        const migrateNode = (
+          node: SplitNode,
+          tab: TerminalTab,
+        ): SplitNode =>
+          node.type === "split"
+            ? {
+                ...node,
+                first: migrateNode(node.first, tab),
+                second: migrateNode(node.second, tab),
+              }
+            : {
+                ...node,
+                kind: node.kind ?? tab.kind ?? "terminal",
+                browserUrl:
+                  node.browserUrl ??
+                  (tab.kind === "browser" ? tab.browserUrl : undefined),
+                filePath:
+                  node.filePath ??
+                  (tab.kind === "files" ? tab.filePath : undefined),
+                noteContent:
+                  node.noteContent ??
+                  (tab.kind === "note" ? tab.noteContent : undefined),
+              };
+        const withPaneContent =
+          version >= 10
+            ? withCopyOnSelect
+            : {
+                ...withCopyOnSelect,
+                connections: [],
+                workspaces: withCopyOnSelect.workspaces.map((workspace) => ({
+                  ...workspace,
+                  tabs: workspace.tabs.map((tab) => ({
+                    ...tab,
+                    root: migrateNode(tab.root, tab),
+                  })),
+                })),
+              };
+        if (version >= 11) return withPaneContent;
+        const migrateBrowserTabs = (node: SplitNode): SplitNode => {
+          if (node.type === "split") {
+            return {
+              ...node,
+              first: migrateBrowserTabs(node.first),
+              second: migrateBrowserTabs(node.second),
+            };
+          }
+          if (node.kind !== "browser" || node.browserTabs?.length) return node;
+          const url = node.browserUrl ?? "https://www.google.com/";
+          return {
+            ...node,
+            browserUrl: url,
+            browserTabs: [{ id: node.id, url, title: "New tab" }],
+            activeBrowserTabId: node.id,
+          };
+        };
         return {
-          ...withWarpDefaults,
-          settings: {
-            ...withWarpDefaults.settings,
-            terminal: {
-              ...withWarpDefaults.settings.terminal,
-              copyOnSelect: true,
-            },
-          },
+          ...withPaneContent,
+          workspaces: withPaneContent.workspaces.map((workspace) => ({
+            ...workspace,
+            tabs: workspace.tabs.map((tab) => ({
+              ...tab,
+              root: migrateBrowserTabs(tab.root),
+            })),
+          })),
         };
       },
       partialize: (state) => ({
@@ -1007,6 +1275,7 @@ export const useAppStore = create<AppStore>()(
           : [createWorkspace()],
         activeWorkspaceId: state.activeWorkspaceId,
         commandGroups: state.commandGroups,
+        connections: state.connections,
         settings: state.settings,
         sidebarVisible: state.sidebarVisible,
       }),
@@ -1061,6 +1330,7 @@ export const useAppStore = create<AppStore>()(
           ...saved,
           settings,
           commandGroups,
+          connections: saved.connections ?? current.connections,
           workspaces,
         };
       },

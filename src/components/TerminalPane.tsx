@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
@@ -14,8 +20,10 @@ import {
   Edit3,
   Eraser,
   File,
+  Files,
   Folder,
   FolderSearch,
+  Globe2,
   History,
   MoreHorizontal,
   MousePointer2,
@@ -25,6 +33,8 @@ import {
   Settings,
   SplitSquareHorizontal,
   SplitSquareVertical,
+  StickyNote,
+  TerminalSquare,
   Trash2,
   X,
 } from "lucide-react";
@@ -36,6 +46,7 @@ import type {
   QuickCommand,
   SplitDirection,
   SplitNode,
+  TabKind,
   ThemeDefinition,
 } from "../types";
 import { buildFontStack } from "../lib/themes";
@@ -70,20 +81,23 @@ const COMMAND_HISTORY_LIMIT = 250;
 
 interface TerminalPaneProps {
   pane: SplitNode & { type: "pane" };
+  workspaceId: string;
   active: boolean;
   minimalChrome: boolean;
   settings: AppSettings;
   theme: ThemeDefinition;
   commandGroups: CommandGroup[];
   onFocus: () => void;
-  onSplit: (direction: SplitDirection) => void;
+  onSplit: (direction: SplitDirection, kind?: TabKind) => void;
   onClose: () => void;
+  onProcessExit: () => void;
   onRenameTab: () => void;
   onOpenSettings: () => void;
 }
 
 export function TerminalPane({
   pane,
+  workspaceId,
   active,
   minimalChrome,
   settings,
@@ -92,6 +106,7 @@ export function TerminalPane({
   onFocus,
   onSplit,
   onClose,
+  onProcessExit,
   onRenameTab,
   onOpenSettings,
 }: TerminalPaneProps) {
@@ -162,6 +177,7 @@ export function TerminalPane({
   const screenScrollEnabled =
     screenScrollOverride ??
     (settings.terminal.screenScrollMode && screenDetected);
+  const reportProcessExit = useEffectEvent(onProcessExit);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -491,6 +507,8 @@ export function TerminalPane({
           if (isScreenCommand(command)) {
             screenDetectedRef.current = true;
             setScreenDetected(true);
+          } else if (isRemoteCommand(command)) {
+            remoteSessionRef.current = true;
           } else if (
             screenDetectedRef.current &&
             /^(exit|logout)$/.test(command.trim())
@@ -589,6 +607,23 @@ export function TerminalPane({
     requestCompletionRef.current = () => void requestCompletion();
 
     const disposeInput = terminal.onData((data) => {
+      if (
+        data === "\x04" &&
+        !remoteSessionRef.current &&
+        !screenDetectedRef.current
+      ) {
+        void window.fzTerminal.pty
+          .getContext(pane.sessionId)
+          .then((context) => {
+            if (context.remote || context.multiplexer) {
+              window.fzTerminal.pty.write(pane.sessionId, data);
+            } else {
+              reportProcessExit();
+            }
+          })
+          .catch(() => window.fzTerminal.pty.write(pane.sessionId, data));
+        return;
+      }
       for (const character of data) {
         if (screenPrefixRef.current) {
           screenPrefixRef.current = false;
@@ -697,7 +732,14 @@ export function TerminalPane({
           pane.sessionId,
         );
         if (disposed) return;
-        remoteSessionRef.current = context.remote;
+        if (context.remote || navigator.userAgent.includes("Linux")) {
+          remoteSessionRef.current = context.remote;
+        }
+        if (context.connection) {
+          useAppStore
+            .getState()
+            .upsertDetectedConnection(workspaceId, context.connection);
+        }
         if (context.multiplexer === "screen") {
           screenDetectedRef.current = true;
           setScreenDetected(true);
@@ -716,15 +758,16 @@ export function TerminalPane({
 
     const stopData = window.fzTerminal.pty.onData((event) => {
       if (event.id !== pane.sessionId) return;
+      if (/Connection to .+ closed[.]?/i.test(event.data)) {
+        remoteSessionRef.current = false;
+      }
       terminal.write(event.data, scheduleSuggestionPosition);
       appendHistoryOutput(event.data);
     });
     const stopExit = window.fzTerminal.pty.onExit((event) => {
       if (event.id !== pane.sessionId) return;
       setExited(true);
-      terminal.write(
-        `\r\n\x1b[31mProcess exited with code ${event.exitCode}\x1b[0m\r\n`,
-      );
+      reportProcessExit();
     });
 
     let fittedCols = terminal.cols;
@@ -867,7 +910,7 @@ export function TerminalPane({
       recordCommandRef.current = () => undefined;
       positionCommandSuggestionRef.current = () => undefined;
     };
-  }, [pane.sessionId]);
+  }, [pane.sessionId, workspaceId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1033,6 +1076,12 @@ export function TerminalPane({
         navigator.userAgent.includes("Mac OS") ? "Cmd" : "Ctrl",
       )
       .replaceAll("+", " ");
+  const splitKinds = (direction: SplitDirection): ContextMenuItem[] =>
+    (Object.keys(terminalSplitLabels) as TabKind[]).map((kind) => ({
+      label: terminalSplitLabels[kind],
+      icon: terminalSplitIcons[kind],
+      action: () => onSplit(direction, kind),
+    }));
 
   const items: ContextMenuItem[] = [
     {
@@ -1118,9 +1167,19 @@ export function TerminalPane({
       action: () => onSplit("horizontal"),
     },
     {
+      label: "Split right with…",
+      icon: SplitSquareHorizontal,
+      children: splitKinds("horizontal"),
+    },
+    {
       label: "Split top / bottom",
       icon: SplitSquareVertical,
       action: () => onSplit("vertical"),
+    },
+    {
+      label: "Split below with…",
+      icon: SplitSquareVertical,
+      children: splitKinds("vertical"),
     },
     {
       label: "Rename tab",
@@ -1671,6 +1730,26 @@ function buildExactSearchOptions(
 function isScreenCommand(command: string) {
   return /(^|(?:sudo\s+))screen(?:\s|$)/.test(command.trim());
 }
+
+function isRemoteCommand(command: string) {
+  return /(^|(?:sudo\s+))(?:ssh|sshpass|mosh|telnet)(?:\s|$)/.test(
+    command.trim(),
+  );
+}
+
+const terminalSplitLabels: Record<TabKind, string> = {
+  terminal: "Terminal",
+  browser: "Browser",
+  files: "Files",
+  note: "Note",
+};
+
+const terminalSplitIcons = {
+  terminal: TerminalSquare,
+  browser: Globe2,
+  files: Files,
+  note: StickyNote,
+} satisfies Record<TabKind, typeof TerminalSquare>;
 
 function mixHexColors(background: string, foreground: string, ratio: number) {
   const parse = (value: string) => {

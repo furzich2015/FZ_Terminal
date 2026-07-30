@@ -4,6 +4,16 @@ const isSessionId = (value) =>
   typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
 const isSafeText = (value, limit = 4096) =>
   typeof value === "string" && value.length <= limit && !value.includes("\0");
+const isSafePassword = (value) =>
+  value === undefined ||
+  (typeof value === "string" &&
+    value.length <= 1024 &&
+    !/[\0\r\n]/.test(value));
+const isSafeConnection = (value) =>
+  value === undefined ||
+  (value &&
+    typeof value === "object" &&
+    isSafeText(value.host, 255));
 const isProfileEntryKey = (value) =>
   typeof value === "string" &&
   value.startsWith("fz-terminal-") &&
@@ -151,6 +161,12 @@ contextBridge.exposeInMainWorld("fzTerminal", {
       ipcRenderer.on("browser:state", listener);
       return () => ipcRenderer.removeListener("browser:state", listener);
     },
+    onContextMenu: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("browser:context-menu", listener);
+      return () =>
+        ipcRenderer.removeListener("browser:context-menu", listener);
+    },
   },
   files: {
     home: () => ipcRenderer.invoke("files:home"),
@@ -159,6 +175,157 @@ contextBridge.exposeInMainWorld("fzTerminal", {
         throw new Error("Invalid directory");
       }
       return ipcRenderer.invoke("files:list-directory", directory);
+    },
+    listRemoteDirectory: (connection, directory, force = false) => {
+      if (
+        !connection ||
+        typeof connection !== "object" ||
+        !isSafeText(connection.host, 255) ||
+        (directory !== undefined && !isSafeText(directory, 2048))
+      ) {
+        throw new Error("Invalid remote directory request");
+      }
+      return ipcRenderer.invoke(
+        "files:list-remote-directory",
+        connection,
+        directory,
+        Boolean(force),
+      );
+    },
+    transfer: (connection, request) => {
+      if (
+        !connection ||
+        typeof connection !== "object" ||
+        !isSafeText(connection.host, 255) ||
+        !request ||
+        typeof request !== "object" ||
+        !["upload", "download"].includes(request.direction) ||
+        !isSafeText(request.sourcePath, 2048) ||
+        !isSafeText(request.targetDirectory, 2048) ||
+        !isSafePassword(request.sudoPassword)
+      ) {
+        throw new Error("Invalid file transfer request");
+      }
+      return ipcRenderer.invoke("files:transfer", connection, {
+        direction: request.direction,
+        sourcePath: request.sourcePath,
+        targetDirectory: request.targetDirectory,
+        directory: Boolean(request.directory),
+        ...(request.sudoPassword
+          ? { sudoPassword: request.sudoPassword }
+          : {}),
+      });
+    },
+    remoteTerminalArgs: (connection, command) => {
+      if (
+        !connection ||
+        typeof connection !== "object" ||
+        !isSafeText(connection.host, 255) ||
+        !isSafeText(command, 8192)
+      ) {
+        throw new Error("Invalid remote terminal request");
+      }
+      return ipcRenderer.invoke(
+        "files:remote-terminal-args",
+        connection,
+        command,
+      );
+    },
+    createDirectory: (request) => {
+      if (
+        !request ||
+        !isSafeText(request.path, 4096) ||
+        !isSafeConnection(request.connection) ||
+        !isSafePassword(request.sudoPassword)
+      ) {
+        throw new Error("Invalid create-directory request");
+      }
+      return ipcRenderer.invoke("files:create-directory", {
+        path: request.path,
+        ...(request.connection ? { connection: request.connection } : {}),
+        ...(request.sudoPassword
+          ? { sudoPassword: request.sudoPassword }
+          : {}),
+      });
+    },
+    deleteEntry: (request) => {
+      if (
+        !request ||
+        !isSafeText(request.path, 4096) ||
+        !isSafeConnection(request.connection) ||
+        !isSafePassword(request.sudoPassword)
+      ) {
+        throw new Error("Invalid delete request");
+      }
+      return ipcRenderer.invoke("files:delete-entry", {
+        path: request.path,
+        directory: Boolean(request.directory),
+        ...(request.connection ? { connection: request.connection } : {}),
+        ...(request.sudoPassword
+          ? { sudoPassword: request.sudoPassword }
+          : {}),
+      });
+    },
+    moveEntry: (request) => {
+      if (
+        !request ||
+        !isSafeText(request.sourcePath, 4096) ||
+        !isSafeText(request.targetDirectory, 4096) ||
+        !isSafeConnection(request.connection) ||
+        !isSafePassword(request.sudoPassword)
+      ) {
+        throw new Error("Invalid move request");
+      }
+      return ipcRenderer.invoke("files:move-entry", {
+        sourcePath: request.sourcePath,
+        targetDirectory: request.targetDirectory,
+        ...(request.connection ? { connection: request.connection } : {}),
+        ...(request.sudoPassword
+          ? { sudoPassword: request.sudoPassword }
+          : {}),
+      });
+    },
+    readFile: (request) => {
+      if (
+        !request ||
+        !isSafeText(request.path, 4096) ||
+        !isSafeConnection(request.connection) ||
+        !isSafePassword(request.sudoPassword)
+      ) {
+        throw new Error("Invalid read-file request");
+      }
+      return ipcRenderer.invoke("files:read-file", {
+        path: request.path,
+        ...(request.connection ? { connection: request.connection } : {}),
+        ...(request.sudoPassword
+          ? { sudoPassword: request.sudoPassword }
+          : {}),
+      });
+    },
+    writeFile: (request) => {
+      if (
+        !request ||
+        !isSafeText(request.path, 4096) ||
+        !isSafeText(request.content, 4 * 1024 * 1024) ||
+        !isSafeConnection(request.connection) ||
+        !isSafePassword(request.sudoPassword)
+      ) {
+        throw new Error("Invalid write-file request");
+      }
+      return ipcRenderer.invoke("files:write-file", {
+        path: request.path,
+        content: request.content,
+        ...(request.connection ? { connection: request.connection } : {}),
+        ...(request.sudoPassword
+          ? { sudoPassword: request.sudoPassword }
+          : {}),
+      });
+    },
+    openExternal: (filePath) => {
+      if (!isSafeText(filePath, 4096)) {
+        throw new Error("Invalid external file path");
+      }
+      return ipcRenderer.invoke("files:open-external", filePath);
     },
   },
   profile: {

@@ -3,6 +3,7 @@ import type {
   ShortcutAction,
   TabKind,
   QuickCommand,
+  RemoteConnection,
   SplitDirection,
   SplitNode,
   TerminalTab,
@@ -11,6 +12,7 @@ import type {
 import { applyTheme, resolveTheme } from "./lib/themes";
 import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import {
+  collectBrowserPaneIds,
   collectSessionIds,
   defaultSettings,
   useAppStore,
@@ -25,9 +27,6 @@ import {
   type SettingsSection,
 } from "./components/SettingsModal";
 import { ConfirmModal } from "./components/Modal";
-import { BrowserPane } from "./components/BrowserPane";
-import { FilesPane } from "./components/FilesPane";
-import { NotePane } from "./components/NotePane";
 
 interface PendingConfirmation {
   title: string;
@@ -53,7 +52,6 @@ export function App() {
   const addWorkspace = useAppStore((state) => state.addWorkspace);
   const closeWorkspace = useAppStore((state) => state.closeWorkspace);
   const addTab = useAppStore((state) => state.addTab);
-  const updateTab = useAppStore((state) => state.updateTab);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const closeTab = useAppStore((state) => state.closeTab);
   const splitPane = useAppStore((state) => state.splitPane);
@@ -76,9 +74,12 @@ export function App() {
     activeWorkspace?.tabs.find(
       (tab) => tab.id === activeWorkspace.activeTabId,
     ) ?? activeWorkspace?.tabs[0];
-  const activePane = activeTab?.kind === "terminal"
+  const activePane = activeTab
     ? findPane(activeTab.root, activeTab.activePaneId)
     : null;
+  const activePaneKind = activePane?.kind ?? activeTab?.kind;
+  const activeTerminalPane =
+    activePane && activePaneKind === "terminal" ? activePane : null;
   const theme = useMemo(
     () => resolveTheme(settings.appearance),
     [settings.appearance],
@@ -137,48 +138,48 @@ export function App() {
     openSettings: () =>
       setSettingsModal({ open: true, section: "general" }),
     searchTerminal: () => {
-      if (activePane) {
+      if (activeTerminalPane) {
         window.dispatchEvent(
           new CustomEvent("fz:search-terminal", {
-            detail: activePane.sessionId,
+            detail: activeTerminalPane.sessionId,
           }),
         );
       }
     },
     copyTerminal: () => {
-      if (activePane) {
+      if (activeTerminalPane) {
         window.dispatchEvent(
           new CustomEvent("fz:copy-terminal", {
-            detail: activePane.sessionId,
+            detail: activeTerminalPane.sessionId,
           }),
         );
       }
     },
     pasteTerminal: () => {
-      if (activePane) {
+      if (activeTerminalPane) {
         window.dispatchEvent(
           new CustomEvent("fz:paste-terminal", {
-            detail: activePane.sessionId,
+            detail: activeTerminalPane.sessionId,
           }),
         );
       }
     },
     sendInterrupt: () => {
-      if (activePane) {
-        window.fzTerminal.pty.write(activePane.sessionId, "\x03");
+      if (activeTerminalPane) {
+        window.fzTerminal.pty.write(activeTerminalPane.sessionId, "\x03");
         window.dispatchEvent(
           new CustomEvent("fz:clear-input", {
-            detail: activePane.sessionId,
+            detail: activeTerminalPane.sessionId,
           }),
         );
       }
     },
     clearInput: () => {
-      if (activePane) {
-        window.fzTerminal.pty.write(activePane.sessionId, "\x15");
+      if (activeTerminalPane) {
+        window.fzTerminal.pty.write(activeTerminalPane.sessionId, "\x15");
         window.dispatchEvent(
           new CustomEvent("fz:clear-input", {
-            detail: activePane.sessionId,
+            detail: activeTerminalPane.sessionId,
           }),
         );
       }
@@ -192,15 +193,15 @@ export function App() {
       );
     },
     clearTerminal: () => {
-      if (activePane) {
-        window.fzTerminal.pty.write(activePane.sessionId, "\x0c");
+      if (activeTerminalPane) {
+        window.fzTerminal.pty.write(activeTerminalPane.sessionId, "\x0c");
       }
     },
     showCompletions: () => {
-      if (activePane && settings.terminal.fileCompletion) {
+      if (activeTerminalPane && settings.terminal.fileCompletion) {
         window.dispatchEvent(
           new CustomEvent("fz:show-completions", {
-            detail: activePane.sessionId,
+            detail: activeTerminalPane.sessionId,
           }),
         );
       }
@@ -212,10 +213,10 @@ export function App() {
       direction: "left" | "right" | "up" | "down",
     ) => focusPane(direction),
     toggleMaximizePane: () => {
-      if (!activePane) return;
+      if (!activeTerminalPane) return;
       window.dispatchEvent(
         new CustomEvent("fz:toggle-maximize-pane", {
-          detail: activePane.sessionId,
+          detail: activeTerminalPane.sessionId,
         }),
       );
     },
@@ -338,7 +339,7 @@ export function App() {
     if (!activeWorkspace || !activeTab || !activePane) return;
     const elements = [
       ...document.querySelectorAll<HTMLElement>(
-        ".terminal-pane[data-pane-id]",
+        ".pane-cell[data-pane-id]",
       ),
     ];
     const current = elements.find(
@@ -365,7 +366,10 @@ export function App() {
     const paneId = candidate?.element.dataset.paneId;
     if (paneId) {
       setActivePane(activeWorkspace.id, activeTab.id, paneId);
-      candidate.element.querySelector<HTMLElement>(".xterm-helper-textarea")
+      candidate.element
+        .querySelector<HTMLElement>(
+          ".xterm-helper-textarea, input, textarea, button",
+        )
         ?.focus();
     }
   }
@@ -394,12 +398,13 @@ export function App() {
 
   function duplicateTab(tab: TerminalTab) {
     if (!activeWorkspace) return;
+    const sourcePane = findFirstPaneByKind(tab.root, tab.kind);
     addTab(activeWorkspace.id, {
       kind: tab.kind,
       name: `${tab.name} copy`,
-      browserUrl: tab.browserUrl,
-      filePath: tab.filePath,
-      noteContent: tab.noteContent,
+      browserUrl: sourcePane?.browserUrl ?? tab.browserUrl,
+      filePath: sourcePane?.filePath ?? tab.filePath,
+      noteContent: sourcePane?.noteContent ?? tab.noteContent,
     });
   }
 
@@ -427,25 +432,33 @@ export function App() {
   function getTerminalTarget() {
     if (!activeWorkspace) return null;
     let workspace = activeWorkspace;
-    let tab =
-      activeTab?.kind === "terminal"
-        ? activeTab
-        : workspace.tabs.find((item) => item.kind === "terminal");
+    let tab: TerminalTab | undefined = activeTab;
+    let pane =
+      tab && findFirstPaneByKind(tab.root, "terminal");
+    if (!pane) {
+      tab = workspace.tabs.find((item) =>
+        Boolean(findFirstPaneByKind(item.root, "terminal")),
+      );
+      pane = tab ? findFirstPaneByKind(tab.root, "terminal") : null;
+    }
     let delay = 0;
-    if (!tab) {
+    if (!tab || !pane) {
       const created = addTab(workspace.id, { kind: "terminal" });
       workspace =
         useAppStore
           .getState()
           .workspaces.find((item) => item.id === workspace.id) ?? workspace;
       tab = workspace.tabs.find((item) => item.id === created.tabId);
+      pane = tab ? findFirstPaneByKind(tab.root, "terminal") : null;
       delay = 120;
     } else if (tab.id !== workspace.activeTabId) {
       setActiveTab(workspace.id, tab.id);
       delay = 50;
     }
-    if (!tab) return null;
-    const pane = findPane(tab.root, tab.activePaneId);
+    if (!tab || !pane) return null;
+    if (tab.activePaneId !== pane.id) {
+      setActivePane(workspace.id, tab.id, pane.id);
+    }
     return pane ? { sessionId: pane.sessionId, delay } : null;
   }
 
@@ -481,6 +494,45 @@ export function App() {
     }, target.delay);
   }
 
+  function openRemotePathInTerminal(
+    connection: RemoteConnection,
+    remotePath: string,
+    directory: boolean,
+    action: "cat" | "nano" | "less" | "grep" = "cat",
+    pattern = "",
+  ) {
+    const target = getTerminalTarget();
+    if (!target) return;
+    const quotedPath = quoteShell(remotePath);
+    const remoteCommand = directory
+      ? `cd -- ${quotedPath} && exec "\${SHELL:-/bin/sh}" -l`
+      : action === "nano"
+        ? `nano -- ${quotedPath}`
+        : action === "less"
+          ? `less -- ${quotedPath}`
+          : action === "grep"
+            ? `grep --color=always -n -- ${quoteShell(pattern)} ${quotedPath}`
+            : `cat -- ${quotedPath}`;
+    void window.fzTerminal.files
+      .remoteTerminalArgs(connection, remoteCommand)
+      .then((sshArguments) => {
+        const command = `ssh ${sshArguments.map(quoteShell).join(" ")}`;
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent("fz:quick-command", {
+              detail: {
+                sessionId: target.sessionId,
+                command,
+                execute: true,
+              },
+            }),
+          );
+          window.fzTerminal.pty.write(target.sessionId, `${command}\r`);
+        }, target.delay);
+      })
+      .catch(() => undefined);
+  }
+
   function killSessions(node: SplitNode) {
     for (const sessionId of collectSessionIds(node)) {
       window.fzTerminal.pty.kill(sessionId);
@@ -488,8 +540,10 @@ export function App() {
   }
 
   function performCloseTab(workspace: Workspace, tab: TerminalTab) {
-    if (tab.kind === "terminal") killSessions(tab.root);
-    if (tab.kind === "browser") window.fzTerminal.browser.destroy(tab.id);
+    killSessions(tab.root);
+    for (const id of collectBrowserPaneIds(tab.root)) {
+      window.fzTerminal.browser.destroy(id);
+    }
     closeTab(workspace.id, tab.id);
   }
 
@@ -502,7 +556,7 @@ export function App() {
     setPendingConfirmation({
       title: `Close “${tab.name}”?`,
       message:
-        tab.kind === "terminal"
+        collectSessionIds(tab.root).length > 0
           ? "The running shell processes in this tab will be terminated."
           : "This tab will be closed.",
       confirmLabel: "Close tab",
@@ -519,7 +573,13 @@ export function App() {
       performCloseTab(workspace, tab);
       return;
     }
-    window.fzTerminal.pty.kill(pane.sessionId);
+    const kind = pane.kind ?? tab.kind;
+    if (kind === "terminal") window.fzTerminal.pty.kill(pane.sessionId);
+    if (kind === "browser") {
+      for (const id of collectBrowserPaneIds(pane)) {
+        window.fzTerminal.browser.destroy(id);
+      }
+    }
     closePane(workspace.id, tab.id, pane.id);
   }
 
@@ -535,7 +595,10 @@ export function App() {
     }
     setPendingConfirmation({
       title: "Close this pane?",
-      message: "The shell process running in this pane will be terminated.",
+      message:
+        (pane.kind ?? tab.kind) === "terminal"
+          ? "The shell process running in this pane will be terminated."
+          : "This pane will be closed.",
       confirmLabel: "Close pane",
       run,
     });
@@ -545,8 +608,10 @@ export function App() {
     const workspace = workspaces.find((item) => item.id === workspaceId);
     if (!workspace) return;
     for (const tab of workspace.tabs) {
-      if (tab.kind === "terminal") killSessions(tab.root);
-      if (tab.kind === "browser") window.fzTerminal.browser.destroy(tab.id);
+      killSessions(tab.root);
+      for (const id of collectBrowserPaneIds(tab.root)) {
+        window.fzTerminal.browser.destroy(id);
+      }
     }
     closeWorkspace(workspaceId);
   }
@@ -563,7 +628,7 @@ export function App() {
     >
       <TitleBar
         sidebarVisible={sidebarVisible}
-        terminalActive={activeTab.kind === "terminal"}
+        terminalActive={activePaneKind === "terminal"}
         onToggleSidebar={handlers.toggleSidebar}
         onSplitHorizontal={handlers.splitHorizontal}
         onOpenSettings={handlers.openSettings}
@@ -588,63 +653,33 @@ export function App() {
       <div className="app-content">
         <main className="terminal-workspace">
           <div className="terminal-stage">
-            {activeTab.kind === "terminal" && (
-              <SplitView
-                node={activeTab.root}
-                workspace={activeWorkspace}
-                tab={activeTab}
-                settings={settings}
-                theme={theme}
-                commandGroups={commandGroups}
-                onClosePane={(pane) =>
-                  requestClosePane(activeWorkspace, activeTab, pane)
-                }
-                onRenameTab={() =>
-                  window.dispatchEvent(
-                    new CustomEvent("fz:rename-tab", {
-                      detail: activeTab.id,
-                    }),
-                  )
-                }
-                onOpenSettings={() =>
-                  setSettingsModal({ open: true, section: "terminal" })
-                }
-              />
-            )}
-            {activeTab.kind === "browser" && (
-              <BrowserPane
-                id={activeTab.id}
-                initialUrl={
-                  activeTab.browserUrl ?? "https://www.google.com/"
-                }
-                visible={!settingsModal.open && !pendingConfirmation}
-                onUrlChange={(browserUrl) =>
-                  updateTab(activeWorkspace.id, activeTab.id, {
-                    browserUrl,
-                  })
-                }
-              />
-            )}
-            {activeTab.kind === "files" && (
-              <FilesPane
-                initialPath={activeTab.filePath ?? "~"}
-                onPathChange={(filePath) =>
-                  updateTab(activeWorkspace.id, activeTab.id, { filePath })
-                }
-                onOpenInTerminal={openPathInTerminal}
-              />
-            )}
-            {activeTab.kind === "note" && (
-              <NotePane
-                key={activeTab.id}
-                initialContent={activeTab.noteContent ?? ""}
-                onChange={(noteContent) =>
-                  updateTab(activeWorkspace.id, activeTab.id, {
-                    noteContent,
-                  })
-                }
-              />
-            )}
+            <SplitView
+              node={activeTab.root}
+              workspace={activeWorkspace}
+              tab={activeTab}
+              settings={settings}
+              theme={theme}
+              commandGroups={commandGroups}
+              browserVisible={!settingsModal.open && !pendingConfirmation}
+              onClosePane={(pane) =>
+                requestClosePane(activeWorkspace, activeTab, pane)
+              }
+              onTerminalExit={(pane) =>
+                performClosePane(activeWorkspace, activeTab, pane)
+              }
+              onRenameTab={() =>
+                window.dispatchEvent(
+                  new CustomEvent("fz:rename-tab", {
+                    detail: activeTab.id,
+                  }),
+                )
+              }
+              onOpenSettings={() =>
+                setSettingsModal({ open: true, section: "terminal" })
+              }
+              onOpenInTerminal={openPathInTerminal}
+              onOpenRemoteInTerminal={openRemotePathInTerminal}
+            />
           </div>
         </main>
         {sidebarVisible && (
@@ -693,6 +728,19 @@ function findPane(
 ): (SplitNode & { type: "pane" }) | null {
   if (node.type === "pane") return node.id === paneId ? node : null;
   return findPane(node.first, paneId) ?? findPane(node.second, paneId);
+}
+
+function findFirstPaneByKind(
+  node: SplitNode,
+  kind: TabKind,
+): (SplitNode & { type: "pane" }) | null {
+  if (node.type === "pane") {
+    return (node.kind ?? "terminal") === kind ? node : null;
+  }
+  return (
+    findFirstPaneByKind(node.first, kind) ??
+    findFirstPaneByKind(node.second, kind)
+  );
 }
 
 function quoteShell(value: string) {

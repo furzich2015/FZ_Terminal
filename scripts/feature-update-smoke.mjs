@@ -553,7 +553,7 @@ if (
   failures.push("bottom FZ Terminal beta brand did not replace session count");
 }
 if (themes < 11) failures.push("new themes are missing");
-if (shell.version !== 9) failures.push("settings were not migrated");
+if (shell.version !== 11) failures.push("settings were not migrated");
 if (systemFonts < 3) failures.push("system font enumeration failed");
 if (liveAccent !== "#12abde") {
   failures.push("advanced palette did not apply live");

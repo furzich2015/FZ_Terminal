@@ -17,6 +17,7 @@ import {
 import type { QuickCommand } from "../types";
 import { useAppStore } from "../store/appStore";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { SelectMenu } from "./DropdownMenu";
 import { Modal, PromptModal } from "./Modal";
 import { Toggle } from "./Toggle";
 
@@ -559,21 +560,20 @@ export function Sidebar({
           <div className="form-stack">
             <label className="field">
               <span>Folder</span>
-              <select
+              <SelectMenu
                 value={commandModal.groupId}
-                onChange={(event) =>
+                ariaLabel="Command folder"
+                options={groups.map((group) => ({
+                  value: group.id,
+                  label: group.name,
+                }))}
+                onChange={(groupId) =>
                   setCommandModal({
                     ...commandModal,
-                    groupId: event.target.value,
+                    groupId,
                   })
                 }
-              >
-                {groups.map((group) => (
-                  <option value={group.id} key={group.id}>
-                    {group.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label className="field">
               <span>Name</span>

@@ -8,17 +8,21 @@ const {
   shell,
 } = require("electron");
 const net = require("node:net");
+const crypto = require("node:crypto");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const { autoUpdater } = require("electron-updater");
 const pty = require("node-pty");
 
 const sessions = new Map();
 const browserViews = new Map();
+const sshControlSockets = new Map();
+const remoteDirectoryCache = new Map();
 const TERMINAL_BACKLOG_LIMIT = 8_000_000;
+const FILE_EDITOR_LIMIT = 4 * 1024 * 1024;
 const PROFILE_BACKUP_NAME = "profile.json";
 const PROFILE_ENTRY_PREFIX = "fz-terminal-";
 const PROFILE_BACKUP_LIMIT = 24 * 1024 * 1024;
@@ -479,6 +483,7 @@ function getDescendantProcesses(rootPid) {
       queue.push(pid);
       let command = "";
       let argv0 = "";
+      let args = [];
       try {
         command = fs
           .readFileSync(`/proc/${pid}/comm`, "utf8")
@@ -488,15 +493,15 @@ function getDescendantProcesses(rootPid) {
         // The process may have exited between reading the child list and comm.
       }
       try {
-        argv0 = fs
+        args = fs
           .readFileSync(`/proc/${pid}/cmdline`, "utf8")
-          .split("\0")[0]
-          .trim()
-          .toLowerCase();
+          .split("\0")
+          .filter(Boolean);
+        argv0 = (args[0] || "").trim().toLowerCase();
       } catch {
         // argv[0] is optional context; comm remains the primary signal.
       }
-      processes.push({ pid, command, argv0 });
+      processes.push({ pid, command, argv0, args });
     }
   }
   return processes;
@@ -505,7 +510,8 @@ function getDescendantProcesses(rootPid) {
 function getSessionContext(id) {
   const session = sessions.get(id);
   if (!session) return { remote: false, multiplexer: null };
-  const commands = getDescendantProcesses(session.process.pid).flatMap(
+  const processes = getDescendantProcesses(session.process.pid);
+  const commands = processes.flatMap(
     ({ command, argv0 }) =>
       [command, argv0]
         .filter(Boolean)
@@ -519,7 +525,86 @@ function getSessionContext(id) {
     : commands.some((command) => command === "tmux")
       ? "tmux"
       : null;
-  return { remote, multiplexer };
+  const sshProcess = processes.find(
+    ({ command, argv0 }) =>
+      path.basename(command) === "ssh" || path.basename(argv0) === "ssh",
+  );
+  return {
+    remote,
+    multiplexer,
+    ...(sshProcess ? { connection: parseSshConnection(sshProcess.args) } : {}),
+  };
+}
+
+function parseSshConnection(args) {
+  let user;
+  let port = 22;
+  let target = "";
+  const optionsWithValue = new Set([
+    "-b",
+    "-c",
+    "-D",
+    "-E",
+    "-e",
+    "-F",
+    "-I",
+    "-i",
+    "-J",
+    "-L",
+    "-l",
+    "-m",
+    "-O",
+    "-o",
+    "-p",
+    "-Q",
+    "-R",
+    "-S",
+    "-W",
+    "-w",
+  ]);
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--") {
+      target = args[index + 1] || "";
+      break;
+    }
+    if (argument === "-l" && args[index + 1]) {
+      user = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("-l") && argument.length > 2) {
+      user = argument.slice(2);
+      continue;
+    }
+    if (argument === "-p" && /^\d+$/.test(args[index + 1] || "")) {
+      port = Number(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (/^-p\d+$/.test(argument)) {
+      port = Number(argument.slice(2));
+      continue;
+    }
+    if (optionsWithValue.has(argument)) {
+      index += 1;
+      continue;
+    }
+    if (!argument.startsWith("-")) {
+      target = argument;
+      break;
+    }
+  }
+  if (!target) return undefined;
+  const at = target.lastIndexOf("@");
+  const host = at >= 0 ? target.slice(at + 1) : target;
+  if (at >= 0) user = target.slice(0, at);
+  if (!host || /[\s\0]/.test(host)) return undefined;
+  return {
+    host,
+    ...(user ? { user } : {}),
+    port: Math.min(65535, Math.max(1, port || 22)),
+  };
 }
 
 function listSessionDirectory(id, requestedDirectory) {
@@ -581,6 +666,16 @@ function resolveBrowserUrl(value) {
     throw new Error("Only HTTP and HTTPS pages can open in a browser tab");
   }
   return url.href;
+}
+
+function browserUserAgent() {
+  const platform =
+    process.platform === "win32"
+      ? "Windows NT 10.0; Win64; x64"
+      : process.platform === "darwin"
+        ? "Macintosh; Intel Mac OS X 10_15_7"
+        : "X11; Linux x86_64";
+  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 }
 
 function sanitizeBounds(bounds) {
@@ -652,7 +747,8 @@ function createBrowserView(event, id, requestedUrl, bounds) {
     existing?.owner === event.sender &&
     !existing.view.webContents.isDestroyed()
   ) {
-    existing.view.setBounds(sanitizeBounds(bounds));
+    existing.bounds = sanitizeBounds(bounds);
+    existing.view.setBounds(existing.bounds);
     sendBrowserState(id, existing);
     return;
   }
@@ -667,13 +763,20 @@ function createBrowserView(event, id, requestedUrl, bounds) {
       partition: "persist:fz-browser",
     },
   });
-  const entry = { view, owner: event.sender, opacityStyleKey: null };
+  const entry = {
+    view,
+    owner: event.sender,
+    bounds: sanitizeBounds(bounds),
+    opacityStyleKey: null,
+  };
   browserViews.set(id, entry);
   view.setBackgroundColor(
     process.platform === "linux" ? "#00000000" : "#101217",
   );
-  view.setBounds(sanitizeBounds(bounds));
+  view.setBounds(entry.bounds);
+  view.setVisible(false);
   mainWindow.contentView.addChildView(view);
+  view.webContents.setUserAgent(browserUserAgent());
 
   const update = () => sendBrowserState(id, entry);
   view.webContents.on("did-start-loading", update);
@@ -684,6 +787,15 @@ function createBrowserView(event, id, requestedUrl, bounds) {
   view.webContents.on("did-navigate", update);
   view.webContents.on("did-navigate-in-page", update);
   view.webContents.on("page-title-updated", update);
+  view.webContents.on("context-menu", (_contextEvent, params) => {
+    if (!entry.owner.isDestroyed()) {
+      entry.owner.send("browser:context-menu", {
+        id,
+        x: entry.bounds.x + params.x,
+        y: entry.bounds.y + params.y,
+      });
+    }
+  });
   view.webContents.on(
     "did-fail-load",
     (_event, errorCode, errorDescription) => {
@@ -749,6 +861,796 @@ function listFileDirectory(requestedDirectory) {
         left.name.localeCompare(right.name),
     );
   return { cwd: targetDirectory, entries };
+}
+
+function normalizeRemoteConnection(value) {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid SSH connection");
+  }
+  const host = String(value.host || "").trim();
+  const user = String(value.user || "").trim();
+  const identityFile = String(value.identityFile || "").trim();
+  const port = Number(value.port || 22);
+  if (
+    !host ||
+    host.length > 255 ||
+    !/^[A-Za-z0-9._:[\]%-]+$/.test(host) ||
+    user.length > 128 ||
+    (user && !/^[A-Za-z0-9._-]+$/.test(user)) ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    throw new Error("Invalid SSH connection");
+  }
+  if (
+    identityFile &&
+    (identityFile.length > 2048 ||
+      identityFile.includes("\0") ||
+      !path.isAbsolute(identityFile))
+  ) {
+    throw new Error("SSH key path must be absolute");
+  }
+  return { host, user, port, identityFile };
+}
+
+function quoteRemoteShell(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function quoteSftpPath(value) {
+  const requested = String(value);
+  if (
+    !requested ||
+    requested.length > 2048 ||
+    requested.includes("\0") ||
+    /[\r\n]/.test(requested)
+  ) {
+    throw new Error("Invalid file transfer path");
+  }
+  return `"${requested.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function sshConnectionKey(connection) {
+  return [
+    connection.user,
+    connection.host,
+    connection.port,
+    connection.identityFile,
+  ].join("\0");
+}
+
+function sshConnectionTarget(connection) {
+  return connection.user
+    ? `${connection.user}@${connection.host}`
+    : connection.host;
+}
+
+function sshControlOptions(connection) {
+  if (process.platform === "win32") return [];
+  const key = sshConnectionKey(connection);
+  let entry = sshControlSockets.get(key);
+  if (!entry) {
+    const directory = path.join(app.getPath("userData"), "ssh-control");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const hash = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24);
+    entry = {
+      path: path.join(directory, `${hash}.sock`),
+      target: sshConnectionTarget(connection),
+    };
+    sshControlSockets.set(key, entry);
+  }
+  return [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPersist=600",
+    "-o",
+    `ControlPath=${entry.path}`,
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=3",
+  ];
+}
+
+function listRemoteFileDirectory(
+  connectionValue,
+  requestedDirectory,
+  force = false,
+) {
+  const connection = normalizeRemoteConnection(connectionValue);
+  const requested =
+    typeof requestedDirectory === "string" && requestedDirectory.trim()
+      ? requestedDirectory.trim()
+      : "~";
+  if (requested.length > 2048 || requested.includes("\0")) {
+    return Promise.reject(new Error("Invalid remote directory"));
+  }
+  const cacheKey = `${sshConnectionKey(connection)}\0${requested}`;
+  const cached = remoteDirectoryCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.savedAt < 30_000) {
+    return Promise.resolve(cached.listing);
+  }
+  const remoteScript = [
+    `requested=${quoteRemoteShell(requested)}`,
+    'case "$requested" in "~") requested="$HOME";; "~/"*) requested="$HOME/${requested#~/}";; esac',
+    'cd -- "$requested" || exit 72',
+    "printf '%s\\0' \"$PWD\"",
+    "find . -mindepth 1 -maxdepth 1 -printf '%f\\0%y\\0%s\\0%T@\\0' 2>/dev/null | head -c 8388608",
+  ].join("; ");
+  const target = sshConnectionTarget(connection);
+  const args = [
+    "-p",
+    String(connection.port),
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=8",
+    ...sshControlOptions(connection),
+    ...(connection.identityFile ? ["-i", connection.identityFile] : []),
+    target,
+    remoteScript,
+  ];
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ssh",
+      args,
+      {
+        encoding: "utf8",
+        maxBuffer: 9 * 1024 * 1024,
+        timeout: 15_000,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const detail = String(stderr || error.message)
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 400);
+          reject(
+            new Error(
+              detail ||
+                "SSH connection failed. Check your SSH agent, config, or key.",
+            ),
+          );
+          return;
+        }
+        const fields = stdout.split("\0");
+        const cwd = fields.shift() || requested;
+        const entries = [];
+        for (let index = 0; index + 3 < fields.length; index += 4) {
+          const name = fields[index];
+          if (!name) continue;
+          const kind = fields[index + 1];
+          const size = Number(fields[index + 2]);
+          const modifiedSeconds = Number(fields[index + 3]);
+          entries.push({
+            name,
+            path: cwd === "/" ? `/${name}` : `${cwd}/${name}`,
+            directory: kind === "d",
+            ...(Number.isFinite(size) ? { size } : {}),
+            ...(Number.isFinite(modifiedSeconds)
+              ? { modified: modifiedSeconds * 1000 }
+              : {}),
+          });
+          if (entries.length >= 1000) break;
+        }
+        entries.sort(
+          (left, right) =>
+            Number(right.directory) - Number(left.directory) ||
+            left.name.localeCompare(right.name),
+        );
+        const listing = { cwd, entries, remote: true };
+        remoteDirectoryCache.set(cacheKey, {
+          listing,
+          savedAt: Date.now(),
+        });
+        resolve(listing);
+      },
+    );
+  });
+}
+
+function sftpConnectionArgs(connection) {
+  return [
+    "-b",
+    "-",
+    "-P",
+    String(connection.port),
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=8",
+    ...sshControlOptions(connection),
+    ...(connection.identityFile ? ["-i", connection.identityFile] : []),
+    sshConnectionTarget(connection),
+  ];
+}
+
+async function runSftpBatch(connection, command) {
+  try {
+    await runProcess("sftp", sftpConnectionArgs(connection), {
+      input: Buffer.from(`${command}\n`),
+      maxBuffer: 512 * 1024,
+      timeout: 120_000,
+    });
+  } catch (error) {
+    throw fileOperationError(error, "", "SFTP transfer failed");
+  }
+}
+
+async function transferRemoteFileElevated(connection, request) {
+  const password = normalizeSudoPassword(request.sudoPassword);
+  const remoteTemporaryPath = `/tmp/.fz-terminal-${crypto.randomUUID()}`;
+  const recursive = request.directory ? "-R " : "";
+  const cleanup = async () => {
+    try {
+      await runRemoteOperation(
+        connection,
+        `rm -rf -- ${quoteRemoteShell(remoteTemporaryPath)}`,
+        { timeout: 15_000 },
+      );
+    } catch {
+      // A failed cleanup should not replace the original transfer error.
+    }
+  };
+  try {
+    if (request.direction === "upload") {
+      const localSource = normalizeOperationPath(request.sourcePath, false);
+      const remoteDirectory = normalizeOperationPath(
+        request.targetDirectory,
+        true,
+      );
+      const remoteTarget = path.posix.join(
+        remoteDirectory,
+        path.basename(localSource),
+      );
+      await runSftpBatch(
+        connection,
+        `put ${recursive}${quoteSftpPath(localSource)} ${quoteSftpPath(remoteTemporaryPath)}`,
+      );
+      const moveScript =
+        'if [ -e "$2" ]; then printf FZ_ALREADY_EXISTS >&2; exit 73; fi; mv -- "$1" "$2"';
+      const command = remoteSudoScript(
+        `sh -c ${quoteRemoteShell(moveScript)} fz-terminal-sudo ${quoteRemoteShell(remoteTemporaryPath)} ${quoteRemoteShell(remoteTarget)}`,
+      );
+      await runRemoteOperation(connection, command, {
+        input: localSudoInput(password),
+        timeout: 120_000,
+      });
+    } else {
+      const remoteSource = normalizeOperationPath(request.sourcePath, true);
+      const localDirectory = normalizeOperationPath(
+        request.targetDirectory,
+        false,
+      );
+      const localTarget = path.join(
+        localDirectory,
+        path.posix.basename(remoteSource),
+      );
+      const copyScript =
+        'cp -a -- "$1" "$2" && chown -R -- "$3" "$2"';
+      const command = [
+        'owner="$(id -u):$(id -g)"',
+        remoteSudoScript(
+          `sh -c ${quoteRemoteShell(copyScript)} fz-terminal-sudo ${quoteRemoteShell(remoteSource)} ${quoteRemoteShell(remoteTemporaryPath)} "$owner"`,
+        ),
+      ].join("; ");
+      await runRemoteOperation(connection, command, {
+        input: localSudoInput(password),
+        timeout: 120_000,
+      });
+      await runSftpBatch(
+        connection,
+        `get ${recursive}${quoteSftpPath(remoteTemporaryPath)} ${quoteSftpPath(localTarget)}`,
+      );
+    }
+    remoteDirectoryCache.clear();
+    return {
+      direction: request.direction,
+      sourcePath: String(request.sourcePath),
+      targetDirectory: String(request.targetDirectory),
+    };
+  } catch (error) {
+    throw fileOperationError(error, "", "Privileged file transfer failed");
+  } finally {
+    await cleanup();
+  }
+}
+
+async function transferRemoteFile(connectionValue, requestValue) {
+  const connection = normalizeRemoteConnection(connectionValue);
+  const request =
+    requestValue && typeof requestValue === "object" ? requestValue : {};
+  const direction = request.direction;
+  if (direction !== "upload" && direction !== "download") {
+    throw new Error("Invalid file transfer direction");
+  }
+  if (request.sudoPassword) {
+    return transferRemoteFileElevated(connection, request);
+  }
+  const recursive = request.directory ? "-R " : "";
+  const sourcePath = quoteSftpPath(request.sourcePath);
+  const targetDirectory = quoteSftpPath(request.targetDirectory);
+  const command =
+    direction === "upload"
+      ? `put ${recursive}${sourcePath} ${targetDirectory}`
+      : `get ${recursive}${sourcePath} ${targetDirectory}`;
+  await runSftpBatch(connection, command);
+  remoteDirectoryCache.clear();
+  return {
+    direction,
+    sourcePath: String(request.sourcePath),
+    targetDirectory: String(request.targetDirectory),
+  };
+}
+
+function remoteTerminalArgs(connectionValue, commandValue) {
+  const connection = normalizeRemoteConnection(connectionValue);
+  const command = String(commandValue || "");
+  if (!command || command.length > 8192 || command.includes("\0")) {
+    throw new Error("Invalid remote terminal command");
+  }
+  return [
+    "-t",
+    "-p",
+    String(connection.port),
+    ...sshControlOptions(connection),
+    ...(connection.identityFile ? ["-i", connection.identityFile] : []),
+    sshConnectionTarget(connection),
+    command,
+  ];
+}
+
+function normalizeOperationPath(value, remote = false) {
+  const requested = String(value || "").trim();
+  if (
+    !requested ||
+    requested.length > 4096 ||
+    requested.includes("\0") ||
+    /[\r\n]/.test(requested)
+  ) {
+    throw new Error("Invalid file path");
+  }
+  return remote ? requested : resolveFileDirectory(requested);
+}
+
+function normalizeSudoPassword(value) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 1024 ||
+    /[\0\r\n]/.test(value)
+  ) {
+    throw new Error("Invalid sudo password");
+  }
+  return value;
+}
+
+function fileOperationError(error, stderr, fallback = "File operation failed") {
+  const raw = String(stderr || error?.message || fallback)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 700);
+  if (/^FZ_(?:PERMISSION_REQUIRED|SUDO_FAILED):/.test(raw)) {
+    return new Error(raw);
+  }
+  if (raw.includes("FZ_FILE_TOO_LARGE")) {
+    return new Error("FZ_FILE_TOO_LARGE: File is larger than 4 MB");
+  }
+  if (raw.includes("FZ_BINARY_FILE")) {
+    return new Error("FZ_BINARY_FILE: Binary files cannot open in the editor");
+  }
+  if (raw.includes("FZ_ALREADY_EXISTS")) {
+    return new Error("FZ_ALREADY_EXISTS: Destination already exists");
+  }
+  if (
+    error?.code === "EACCES" ||
+    error?.code === "EPERM" ||
+    /permission denied|operation not permitted|password is required/i.test(raw)
+  ) {
+    return new Error(`FZ_PERMISSION_REQUIRED: ${raw || fallback}`);
+  }
+  if (
+    /incorrect password|authentication failure|sorry, try again|sudo:/i.test(
+      raw,
+    )
+  ) {
+    return new Error(`FZ_SUDO_FAILED: ${raw || "sudo failed"}`);
+  }
+  return new Error(raw || fallback);
+}
+
+function runProcess(
+  executable,
+  args,
+  {
+    input = Buffer.alloc(0),
+    maxBuffer = FILE_EDITOR_LIMIT + 64 * 1024,
+    timeout = 30_000,
+  } = {},
+) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdout = [];
+    let stdoutSize = 0;
+    let stderr = "";
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error("File operation timed out"));
+    }, timeout);
+    child.stdout.on("data", (chunk) => {
+      stdoutSize += chunk.length;
+      if (stdoutSize > maxBuffer) {
+        child.kill();
+        finish(new Error("FZ_FILE_TOO_LARGE"));
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < 32_768) stderr += String(chunk);
+    });
+    child.stdin.on("error", () => undefined);
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        finish(fileOperationError({ code }, stderr));
+        return;
+      }
+      finish(null, {
+        stdout: Buffer.concat(stdout),
+        stderr,
+      });
+    });
+    child.stdin.end(input);
+  });
+}
+
+function localSudoInput(password, payload = Buffer.alloc(0)) {
+  return Buffer.concat([
+    Buffer.from(`${normalizeSudoPassword(password)}\n`),
+    Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)),
+  ]);
+}
+
+function runLocalSudo(executable, args, password, payload, options) {
+  if (process.platform === "win32") {
+    return Promise.reject(
+      new Error("FZ_PERMISSION_REQUIRED: sudo is unavailable on Windows"),
+    );
+  }
+  return runProcess(
+    "sudo",
+    ["-S", "-k", "-p", "", "--", executable, ...args],
+    {
+      ...options,
+      input: localSudoInput(password, payload),
+    },
+  );
+}
+
+function remoteOperationArgs(connection, script) {
+  return [
+    "-p",
+    String(connection.port),
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=8",
+    ...sshControlOptions(connection),
+    ...(connection.identityFile ? ["-i", connection.identityFile] : []),
+    sshConnectionTarget(connection),
+    script,
+  ];
+}
+
+function runRemoteOperation(connection, script, options) {
+  return runProcess("ssh", remoteOperationArgs(connection, script), options);
+}
+
+function remoteSudoScript(command) {
+  return `sudo -S -k -p '' -- ${command}`;
+}
+
+function operationContext(requestValue) {
+  const request =
+    requestValue && typeof requestValue === "object" ? requestValue : {};
+  const connection = request.connection
+    ? normalizeRemoteConnection(request.connection)
+    : null;
+  return {
+    request,
+    connection,
+    remote: Boolean(connection),
+    sudoPassword: request.sudoPassword
+      ? normalizeSudoPassword(request.sudoPassword)
+      : "",
+  };
+}
+
+async function createFileDirectory(requestValue) {
+  const context = operationContext(requestValue);
+  const targetPath = normalizeOperationPath(
+    context.request.path,
+    context.remote,
+  );
+  try {
+    if (!context.remote) {
+      if (context.sudoPassword) {
+        await runLocalSudo(
+          "mkdir",
+          ["--", targetPath],
+          context.sudoPassword,
+        );
+      } else {
+        await fs.promises.mkdir(targetPath);
+      }
+    } else {
+      const command = `mkdir -- ${quoteRemoteShell(targetPath)}`;
+      await runRemoteOperation(
+        context.connection,
+        context.sudoPassword ? remoteSudoScript(command) : command,
+        context.sudoPassword
+          ? { input: localSudoInput(context.sudoPassword) }
+          : undefined,
+      );
+      remoteDirectoryCache.clear();
+    }
+    return { path: targetPath };
+  } catch (error) {
+    throw fileOperationError(error);
+  }
+}
+
+function validateDeletePath(targetPath, remote) {
+  const normalized = remote ? targetPath.replace(/\/+$/, "") : targetPath;
+  const root = remote ? "/" : path.parse(normalized).root;
+  if (
+    !normalized ||
+    normalized === root ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized === "~"
+  ) {
+    throw new Error("Refusing to delete a root directory");
+  }
+}
+
+async function deleteFileEntry(requestValue) {
+  const context = operationContext(requestValue);
+  const targetPath = normalizeOperationPath(
+    context.request.path,
+    context.remote,
+  );
+  validateDeletePath(targetPath, context.remote);
+  const directory = Boolean(context.request.directory);
+  try {
+    if (!context.remote) {
+      if (context.sudoPassword) {
+        await runLocalSudo(
+          "rm",
+          [...(directory ? ["-r"] : []), "--", targetPath],
+          context.sudoPassword,
+        );
+      } else {
+        await fs.promises.rm(targetPath, {
+          recursive: directory,
+          force: false,
+        });
+      }
+    } else {
+      const command = [
+        "rm",
+        ...(directory ? ["-r"] : []),
+        "--",
+        targetPath,
+      ]
+        .map(quoteRemoteShell)
+        .join(" ");
+      await runRemoteOperation(
+        context.connection,
+        context.sudoPassword ? remoteSudoScript(command) : command,
+        context.sudoPassword
+          ? { input: localSudoInput(context.sudoPassword) }
+          : undefined,
+      );
+      remoteDirectoryCache.clear();
+    }
+    return { path: targetPath };
+  } catch (error) {
+    throw fileOperationError(error);
+  }
+}
+
+async function moveFileEntry(requestValue) {
+  const context = operationContext(requestValue);
+  const sourcePath = normalizeOperationPath(
+    context.request.sourcePath,
+    context.remote,
+  );
+  const targetDirectory = normalizeOperationPath(
+    context.request.targetDirectory,
+    context.remote,
+  );
+  const targetPath = context.remote
+    ? path.posix.join(targetDirectory, path.posix.basename(sourcePath))
+    : path.join(targetDirectory, path.basename(sourcePath));
+  if (sourcePath === targetPath) return { path: targetPath };
+  try {
+    if (!context.remote) {
+      try {
+        await fs.promises.access(targetPath);
+        throw new Error("FZ_ALREADY_EXISTS");
+      } catch (error) {
+        if (error?.message === "FZ_ALREADY_EXISTS") throw error;
+        if (error?.code !== "ENOENT") throw error;
+      }
+      if (context.sudoPassword) {
+        await runLocalSudo(
+          "mv",
+          ["--", sourcePath, targetPath],
+          context.sudoPassword,
+        );
+      } else {
+        try {
+          await fs.promises.rename(sourcePath, targetPath);
+        } catch (error) {
+          if (error?.code !== "EXDEV") throw error;
+          await fs.promises.cp(sourcePath, targetPath, {
+            recursive: true,
+            errorOnExist: true,
+          });
+          await fs.promises.rm(sourcePath, {
+            recursive: true,
+            force: false,
+          });
+        }
+      }
+    } else {
+      const quotedTarget = quoteRemoteShell(targetPath);
+      const moveCommand = `if [ -e ${quotedTarget} ]; then printf FZ_ALREADY_EXISTS >&2; exit 73; fi; mv -- ${quoteRemoteShell(sourcePath)} ${quotedTarget}`;
+      await runRemoteOperation(
+        context.connection,
+        context.sudoPassword
+          ? remoteSudoScript(`sh -c ${quoteRemoteShell(moveCommand)}`)
+          : moveCommand,
+        context.sudoPassword
+          ? { input: localSudoInput(context.sudoPassword) }
+          : undefined,
+      );
+      remoteDirectoryCache.clear();
+    }
+    return { path: targetPath };
+  } catch (error) {
+    throw fileOperationError(error);
+  }
+}
+
+function validateEditorBuffer(buffer) {
+  if (buffer.length > FILE_EDITOR_LIMIT) {
+    throw new Error("FZ_FILE_TOO_LARGE");
+  }
+  if (buffer.includes(0)) throw new Error("FZ_BINARY_FILE");
+  return {
+    content: buffer.toString("utf8"),
+    size: buffer.length,
+  };
+}
+
+async function readEditorFile(requestValue) {
+  const context = operationContext(requestValue);
+  const targetPath = normalizeOperationPath(
+    context.request.path,
+    context.remote,
+  );
+  try {
+    let buffer;
+    if (!context.remote) {
+      if (context.sudoPassword) {
+        const result = await runLocalSudo(
+          "cat",
+          ["--", targetPath],
+          context.sudoPassword,
+        );
+        buffer = result.stdout;
+      } else {
+        const stats = await fs.promises.stat(targetPath);
+        if (stats.size > FILE_EDITOR_LIMIT) {
+          throw new Error("FZ_FILE_TOO_LARGE");
+        }
+        buffer = await fs.promises.readFile(targetPath);
+      }
+    } else {
+      const command = `cat -- ${quoteRemoteShell(targetPath)}`;
+      const result = await runRemoteOperation(
+        context.connection,
+        context.sudoPassword ? remoteSudoScript(command) : command,
+        context.sudoPassword
+          ? {
+              input: localSudoInput(context.sudoPassword),
+              maxBuffer: FILE_EDITOR_LIMIT + 1,
+            }
+          : { maxBuffer: FILE_EDITOR_LIMIT + 1 },
+      );
+      buffer = result.stdout;
+    }
+    return { path: targetPath, ...validateEditorBuffer(buffer) };
+  } catch (error) {
+    throw fileOperationError(error);
+  }
+}
+
+async function writeEditorFile(requestValue) {
+  const context = operationContext(requestValue);
+  const targetPath = normalizeOperationPath(
+    context.request.path,
+    context.remote,
+  );
+  const content = String(context.request.content ?? "");
+  const payload = Buffer.from(content, "utf8");
+  if (payload.length > FILE_EDITOR_LIMIT) {
+    throw new Error("FZ_FILE_TOO_LARGE: File is larger than 4 MB");
+  }
+  try {
+    if (!context.remote) {
+      if (context.sudoPassword) {
+        await runLocalSudo(
+          "sh",
+          [
+            "-c",
+            'tee -- "$1" > /dev/null',
+            "fz-terminal-write",
+            targetPath,
+          ],
+          context.sudoPassword,
+          payload,
+          { maxBuffer: 64 * 1024 },
+        );
+      } else {
+        await fs.promises.writeFile(targetPath, payload);
+      }
+    } else {
+      const writeCommand = `tee -- ${quoteRemoteShell(targetPath)} > /dev/null`;
+      await runRemoteOperation(
+        context.connection,
+        context.sudoPassword
+          ? remoteSudoScript(`sh -c ${quoteRemoteShell(writeCommand)}`)
+          : writeCommand,
+        {
+          input: context.sudoPassword
+            ? localSudoInput(context.sudoPassword, payload)
+            : payload,
+          maxBuffer: 64 * 1024,
+        },
+      );
+      remoteDirectoryCache.clear();
+    }
+    return { path: targetPath, size: payload.length };
+  } catch (error) {
+    throw fileOperationError(error);
+  }
+}
+
+async function openFileExternally(filePathValue) {
+  const targetPath = normalizeOperationPath(filePathValue, false);
+  const stats = await fs.promises.stat(targetPath);
+  if (!stats.isFile()) throw new Error("Only files can open externally");
+  const error = await shell.openPath(targetPath);
+  if (error) throw new Error(error);
 }
 
 function createWindow() {
@@ -866,7 +1768,10 @@ app.whenReady().then(() => {
   });
   ipcMain.on("browser:set-bounds", (event, { id, bounds }) => {
     const entry = browserViews.get(id);
-    if (entry?.owner === event.sender) entry.view.setBounds(sanitizeBounds(bounds));
+    if (entry?.owner === event.sender) {
+      entry.bounds = sanitizeBounds(bounds);
+      entry.view.setBounds(entry.bounds);
+    }
   });
   ipcMain.on("browser:navigate", (event, { id, url }) => {
     const entry = browserViews.get(id);
@@ -910,6 +1815,37 @@ app.whenReady().then(() => {
   ipcMain.handle("files:home", () => os.homedir());
   ipcMain.handle("files:list-directory", (_event, directory) =>
     listFileDirectory(directory),
+  );
+  ipcMain.handle(
+    "files:list-remote-directory",
+    (_event, connection, directory, force) =>
+      listRemoteFileDirectory(connection, directory, Boolean(force)),
+  );
+  ipcMain.handle("files:transfer", (_event, connection, request) =>
+    transferRemoteFile(connection, request),
+  );
+  ipcMain.handle(
+    "files:remote-terminal-args",
+    (_event, connection, command) =>
+      remoteTerminalArgs(connection, command),
+  );
+  ipcMain.handle("files:create-directory", (_event, request) =>
+    createFileDirectory(request),
+  );
+  ipcMain.handle("files:delete-entry", (_event, request) =>
+    deleteFileEntry(request),
+  );
+  ipcMain.handle("files:move-entry", (_event, request) =>
+    moveFileEntry(request),
+  );
+  ipcMain.handle("files:read-file", (_event, request) =>
+    readEditorFile(request),
+  );
+  ipcMain.handle("files:write-file", (_event, request) =>
+    writeEditorFile(request),
+  );
+  ipcMain.handle("files:open-external", (_event, filePath) =>
+    openFileExternally(filePath),
   );
 
   ipcMain.handle("profile:load", loadProfileBackup);
@@ -978,6 +1914,14 @@ app.on("before-quit", () => {
   if (updateCheckTimer) clearInterval(updateCheckTimer);
   for (const id of sessions.keys()) killSession(id);
   for (const id of browserViews.keys()) destroyBrowserView(id);
+  for (const entry of sshControlSockets.values()) {
+    execFile(
+      "ssh",
+      ["-S", entry.path, "-O", "exit", entry.target],
+      { timeout: 2_000, windowsHide: true },
+      () => undefined,
+    );
+  }
 });
 
 app.on("window-all-closed", () => {
