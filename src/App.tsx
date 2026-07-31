@@ -1,4 +1,11 @@
-import { useEffect, useEffectEvent, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+} from "react";
 import type {
   ShortcutAction,
   TabKind,
@@ -22,11 +29,14 @@ import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { WorkspaceBar } from "./components/WorkspaceBar";
 import { SplitView } from "./components/SplitView";
-import {
-  SettingsModal,
-  type SettingsSection,
-} from "./components/SettingsModal";
+import type { SettingsSection } from "./components/SettingsModal";
 import { ConfirmModal } from "./components/Modal";
+
+const SettingsModal = lazy(() =>
+  import("./components/SettingsModal").then((module) => ({
+    default: module.SettingsModal,
+  })),
+);
 
 interface PendingConfirmation {
   title: string;
@@ -583,6 +593,26 @@ export function App() {
     closePane(workspace.id, tab.id, pane.id);
   }
 
+  function handleTerminalExit(
+    workspace: Workspace,
+    tab: TerminalTab,
+    pane: SplitNode & { type: "pane" },
+  ) {
+    const isOnlyTabPane =
+      workspace.tabs.length === 1 &&
+      tab.root.type === "pane" &&
+      tab.root.id === pane.id;
+    if (isOnlyTabPane) {
+      if (workspaces.length === 1) {
+        window.fzTerminal.window.close();
+      } else {
+        performCloseWorkspace(workspace.id);
+      }
+      return;
+    }
+    performClosePane(workspace, tab, pane);
+  }
+
   function requestClosePane(
     workspace: Workspace,
     tab: TerminalTab,
@@ -665,7 +695,7 @@ export function App() {
                 requestClosePane(activeWorkspace, activeTab, pane)
               }
               onTerminalExit={(pane) =>
-                performClosePane(activeWorkspace, activeTab, pane)
+                handleTerminalExit(activeWorkspace, activeTab, pane)
               }
               onRenameTab={() =>
                 window.dispatchEvent(
@@ -700,14 +730,16 @@ export function App() {
       </div>
 
       {settingsModal.open && (
-        <SettingsModal
-          open
-          initialSection={settingsModal.section}
-          onClose={() =>
-            setSettingsModal((current) => ({ ...current, open: false }))
-          }
-          onShowCommands={() => setSidebarVisible(true)}
-        />
+        <Suspense fallback={null}>
+          <SettingsModal
+            open
+            initialSection={settingsModal.section}
+            onClose={() =>
+              setSettingsModal((current) => ({ ...current, open: false }))
+            }
+            onShowCommands={() => setSidebarVisible(true)}
+          />
+        </Suspense>
       )}
       <ConfirmModal
         open={Boolean(pendingConfirmation)}

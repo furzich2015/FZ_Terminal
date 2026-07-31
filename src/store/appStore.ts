@@ -85,7 +85,7 @@ export const defaultSettings: AppSettings = {
   },
   terminal: {
     shell: "",
-    scrollback: 100_000,
+    scrollback: 20_000,
     cursorStyle: "block",
     cursorBlink: true,
     copyOnSelect: true,
@@ -1053,7 +1053,7 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: "fz-terminal-state",
-      version: 11,
+      version: 12,
       migrate: (persistedState, version) => {
         const saved = persistedState as PersistedAppState;
         const migrated =
@@ -1240,7 +1240,6 @@ export const useAppStore = create<AppStore>()(
                   })),
                 })),
               };
-        if (version >= 11) return withPaneContent;
         const migrateBrowserTabs = (node: SplitNode): SplitNode => {
           if (node.type === "split") {
             return {
@@ -1258,15 +1257,32 @@ export const useAppStore = create<AppStore>()(
             activeBrowserTabId: node.id,
           };
         };
+        const withBrowserTabs =
+          version >= 11
+            ? withPaneContent
+            : {
+                ...withPaneContent,
+                workspaces: withPaneContent.workspaces.map((workspace) => ({
+                  ...workspace,
+                  tabs: workspace.tabs.map((tab) => ({
+                    ...tab,
+                    root: migrateBrowserTabs(tab.root),
+                  })),
+                })),
+              };
+        if (version >= 12) return withBrowserTabs;
         return {
-          ...withPaneContent,
-          workspaces: withPaneContent.workspaces.map((workspace) => ({
-            ...workspace,
-            tabs: workspace.tabs.map((tab) => ({
-              ...tab,
-              root: migrateBrowserTabs(tab.root),
-            })),
-          })),
+          ...withBrowserTabs,
+          settings: {
+            ...withBrowserTabs.settings,
+            terminal: {
+              ...withBrowserTabs.settings.terminal,
+              scrollback:
+                withBrowserTabs.settings.terminal.scrollback === 100_000
+                  ? defaultSettings.terminal.scrollback
+                  : withBrowserTabs.settings.terminal.scrollback,
+            },
+          },
         };
       },
       partialize: (state) => ({

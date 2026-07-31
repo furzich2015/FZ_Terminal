@@ -74,9 +74,9 @@ interface InlineSuggestionPosition {
   maxWidth: number;
 }
 
-const COMMAND_BLOCK_OUTPUT_LIMIT = 2_000_000;
+const COMMAND_BLOCK_OUTPUT_LIMIT = 512_000;
 const COMMAND_BLOCK_FLUSH_THRESHOLD = 256_000;
-const STORED_COMMAND_OUTPUT_LIMIT = 3_000_000;
+const STORED_COMMAND_OUTPUT_LIMIT = 1_000_000;
 const COMMAND_HISTORY_LIMIT = 250;
 
 interface TerminalPaneProps {
@@ -177,6 +177,7 @@ export function TerminalPane({
   const screenScrollEnabled =
     screenScrollOverride ??
     (settings.terminal.screenScrollMode && screenDetected);
+  const terminalTransparency = settings.appearance.opacity < 1;
   const reportProcessExit = useEffectEvent(onProcessExit);
 
   useEffect(() => {
@@ -302,7 +303,7 @@ export function TerminalPane({
     const searchAddon = new SearchAddon({ highlightLimit: 1000 });
     const terminal = new Terminal({
       allowProposedApi: true,
-      allowTransparency: true,
+      allowTransparency: terminalTransparency,
       convertEol: false,
       cursorBlink: initialSettings.terminal.cursorBlink,
       cursorStyle: initialSettings.terminal.cursorStyle,
@@ -607,23 +608,6 @@ export function TerminalPane({
     requestCompletionRef.current = () => void requestCompletion();
 
     const disposeInput = terminal.onData((data) => {
-      if (
-        data === "\x04" &&
-        !remoteSessionRef.current &&
-        !screenDetectedRef.current
-      ) {
-        void window.fzTerminal.pty
-          .getContext(pane.sessionId)
-          .then((context) => {
-            if (context.remote || context.multiplexer) {
-              window.fzTerminal.pty.write(pane.sessionId, data);
-            } else {
-              reportProcessExit();
-            }
-          })
-          .catch(() => window.fzTerminal.pty.write(pane.sessionId, data));
-        return;
-      }
       for (const character of data) {
         if (screenPrefixRef.current) {
           screenPrefixRef.current = false;
@@ -910,7 +894,7 @@ export function TerminalPane({
       recordCommandRef.current = () => undefined;
       positionCommandSuggestionRef.current = () => undefined;
     };
-  }, [pane.sessionId, workspaceId]);
+  }, [pane.sessionId, terminalTransparency, workspaceId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

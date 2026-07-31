@@ -14,14 +14,15 @@ const os = require("node:os");
 const fs = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
-const { autoUpdater } = require("electron-updater");
 const pty = require("node-pty");
 
 const sessions = new Map();
 const browserViews = new Map();
 const sshControlSockets = new Map();
 const remoteDirectoryCache = new Map();
-const TERMINAL_BACKLOG_LIMIT = 8_000_000;
+const TERMINAL_BACKLOG_LIMIT = 2_000_000;
+const TERMINAL_BACKLOG_CHUNK_SIZE = 64 * 1024;
+const REMOTE_DIRECTORY_CACHE_LIMIT = 128;
 const FILE_EDITOR_LIMIT = 4 * 1024 * 1024;
 const PROFILE_BACKUP_NAME = "profile.json";
 const PROFILE_ENTRY_PREFIX = "fz-terminal-";
@@ -35,6 +36,8 @@ let updateCheckTimer = null;
 let updateCheckInFlight = false;
 let systemFontCache = null;
 let currentWindowOpacity = 1;
+let autoUpdater = null;
+let browserSessionConfigured = false;
 let updateStatus = {
   state: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
@@ -253,6 +256,13 @@ function broadcastUpdateStatus(patch) {
   return updateStatus;
 }
 
+function getAutoUpdater() {
+  if (!autoUpdater) {
+    ({ autoUpdater } = require("electron-updater"));
+  }
+  return autoUpdater;
+}
+
 function updateErrorMessage(error) {
   const message =
     error instanceof Error && error.message
@@ -278,7 +288,7 @@ async function checkForUpdates() {
   }
   updateCheckInFlight = true;
   try {
-    await autoUpdater.checkForUpdates();
+    await getAutoUpdater().checkForUpdates();
   } catch (error) {
     broadcastUpdateStatus({
       state: "error",
@@ -295,7 +305,7 @@ async function downloadUpdate() {
     return updateStatus;
   }
   try {
-    await autoUpdater.downloadUpdate();
+    await getAutoUpdater().downloadUpdate();
   } catch (error) {
     broadcastUpdateStatus({
       state: "error",
@@ -306,18 +316,19 @@ async function downloadUpdate() {
 }
 
 function configureAutoUpdater() {
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.allowPrerelease = false;
+  const updater = getAutoUpdater();
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.allowPrerelease = false;
 
-  autoUpdater.on("checking-for-update", () => {
+  updater.on("checking-for-update", () => {
     broadcastUpdateStatus({
       state: "checking",
       message: "Checking GitHub Releases for a newer version…",
       progress: undefined,
     });
   });
-  autoUpdater.on("update-available", (info) => {
+  updater.on("update-available", (info) => {
     broadcastUpdateStatus({
       state: "available",
       availableVersion: info.version,
@@ -325,7 +336,7 @@ function configureAutoUpdater() {
       progress: undefined,
     });
   });
-  autoUpdater.on("update-not-available", () => {
+  updater.on("update-not-available", () => {
     broadcastUpdateStatus({
       state: "not-available",
       availableVersion: undefined,
@@ -333,14 +344,14 @@ function configureAutoUpdater() {
       progress: undefined,
     });
   });
-  autoUpdater.on("download-progress", (progress) => {
+  updater.on("download-progress", (progress) => {
     broadcastUpdateStatus({
       state: "downloading",
       message: `Downloading update… ${Math.round(progress.percent)}%`,
       progress: Math.max(0, Math.min(100, progress.percent)),
     });
   });
-  autoUpdater.on("update-downloaded", (info) => {
+  updater.on("update-downloaded", (info) => {
     broadcastUpdateStatus({
       state: "downloaded",
       availableVersion: info.version,
@@ -349,7 +360,7 @@ function configureAutoUpdater() {
       progress: 100,
     });
   });
-  autoUpdater.on("error", (error) => {
+  updater.on("error", (error) => {
     broadcastUpdateStatus({
       state: "error",
       message: updateErrorMessage(error),
@@ -391,7 +402,11 @@ function createTerminalSession(event, options) {
     } catch {
       // The shell may have exited while its tab was inactive.
     }
-    return { id, backlog: existing.backlog, pid: existing.process.pid };
+    return {
+      id,
+      backlog: existing.backlogChunks.join(""),
+      pid: existing.process.pid,
+    };
   }
 
   const executable = resolveShell(requestedShell);
@@ -423,13 +438,14 @@ function createTerminalSession(event, options) {
   const session = {
     process: terminalProcess,
     owner: event.sender,
-    backlog: "",
+    backlogChunks: [],
+    backlogLength: 0,
     cwd: workingDirectory,
   };
   sessions.set(id, session);
 
   terminalProcess.onData((data) => {
-    session.backlog = (session.backlog + data).slice(-TERMINAL_BACKLOG_LIMIT);
+    appendTerminalBacklog(session, data);
     if (!session.owner.isDestroyed()) {
       session.owner.send("pty:data", { id, data });
     }
@@ -443,6 +459,41 @@ function createTerminalSession(event, options) {
   });
 
   return { id, backlog: "", pid: terminalProcess.pid };
+}
+
+function appendTerminalBacklog(session, data) {
+  let offset = 0;
+  const chunks = session.backlogChunks;
+  const lastIndex = chunks.length - 1;
+  if (lastIndex >= 0 && chunks[lastIndex].length < TERMINAL_BACKLOG_CHUNK_SIZE) {
+    const appended = data.slice(
+      0,
+      TERMINAL_BACKLOG_CHUNK_SIZE - chunks[lastIndex].length,
+    );
+    chunks[lastIndex] += appended;
+    session.backlogLength += appended.length;
+    offset = appended.length;
+  }
+  while (offset < data.length) {
+    const chunk = data.slice(offset, offset + TERMINAL_BACKLOG_CHUNK_SIZE);
+    chunks.push(chunk);
+    session.backlogLength += chunk.length;
+    offset += chunk.length;
+  }
+
+  let excess = session.backlogLength - TERMINAL_BACKLOG_LIMIT;
+  while (excess > 0 && chunks.length > 0) {
+    const first = chunks[0];
+    if (first.length <= excess) {
+      chunks.shift();
+      session.backlogLength -= first.length;
+      excess -= first.length;
+    } else {
+      chunks[0] = first.slice(excess);
+      session.backlogLength -= excess;
+      excess = 0;
+    }
+  }
 }
 
 function killSession(id) {
@@ -742,6 +793,7 @@ function destroyBrowserView(id, owner) {
 
 function createBrowserView(event, id, requestedUrl, bounds) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  ensureBrowserSessionConfigured();
   const existing = browserViews.get(id);
   if (
     existing?.owner === event.sender &&
@@ -821,6 +873,16 @@ function createBrowserView(event, id, requestedUrl, bounds) {
   void view.webContents
     .loadURL(resolveBrowserUrl(requestedUrl))
     .catch((error) => sendBrowserState(id, entry, error.message));
+}
+
+function ensureBrowserSessionConfigured() {
+  if (browserSessionConfigured) return;
+  session
+    .fromPartition("persist:fz-browser")
+    .setCertificateVerifyProc((request, callback) => {
+      callback(isPrivateNetworkIp(request.hostname) ? 0 : -3);
+    });
+  browserSessionConfigured = true;
 }
 
 function resolveFileDirectory(requestedDirectory) {
@@ -1042,7 +1104,7 @@ function listRemoteFileDirectory(
             left.name.localeCompare(right.name),
         );
         const listing = { cwd, entries, remote: true };
-        remoteDirectoryCache.set(cacheKey, {
+        setRemoteDirectoryCache(cacheKey, {
           listing,
           savedAt: Date.now(),
         });
@@ -1050,6 +1112,16 @@ function listRemoteFileDirectory(
       },
     );
   });
+}
+
+function setRemoteDirectoryCache(key, value) {
+  remoteDirectoryCache.delete(key);
+  remoteDirectoryCache.set(key, value);
+  while (remoteDirectoryCache.size > REMOTE_DIRECTORY_CACHE_LIMIT) {
+    const oldestKey = remoteDirectoryCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    remoteDirectoryCache.delete(oldestKey);
+  }
 }
 
 function sftpConnectionArgs(connection) {
@@ -1713,12 +1785,6 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  session
-    .fromPartition("persist:fz-browser")
-    .setCertificateVerifyProc((request, callback) => {
-      callback(isPrivateNetworkIp(request.hostname) ? 0 : -3);
-    });
-
   ipcMain.on("window:minimize", () => mainWindow?.minimize());
   ipcMain.on("window:toggle-maximize", () => {
     if (!mainWindow) return;
@@ -1859,14 +1925,14 @@ app.whenReady().then(() => {
   ipcMain.handle("updates:download", downloadUpdate);
   ipcMain.on("updates:install", () => {
     if (app.isPackaged && updateStatus.state === "downloaded") {
-      autoUpdater.quitAndInstall(false, true);
+      getAutoUpdater().quitAndInstall(false, true);
     }
   });
   ipcMain.on("updates:open-releases", () => {
     void shell.openExternal(RELEASES_URL);
   });
 
-  configureAutoUpdater();
+  if (app.isPackaged) configureAutoUpdater();
   createWindow();
   if (app.isPackaged) {
     setTimeout(() => {
