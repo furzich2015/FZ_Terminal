@@ -1,7 +1,7 @@
 const PROFILE_ENTRY_PREFIX = "fz-terminal-";
-const PROFILE_SYNC_INTERVAL = 1_500;
+const PROFILE_SYNC_INTERVAL = 5_000;
 
-let lastSnapshot = "";
+let lastFingerprint = "";
 let syncTimer: number | undefined;
 
 function collectProfileEntries() {
@@ -15,13 +15,37 @@ function collectProfileEntries() {
   return entries;
 }
 
+function fingerprintProfileEntries(entries: Record<string, string>) {
+  let hash = 2_166_136_261;
+  let size = 0;
+  let count = 0;
+  const update = (value: string) => {
+    size += value.length;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619);
+    }
+  };
+  for (const key of Object.keys(entries).sort()) {
+    count += 1;
+    update(key);
+    update(entries[key]);
+  }
+  return `${count}:${size}:${hash >>> 0}`;
+}
+
 async function persistProfileIfChanged() {
   const entries = collectProfileEntries();
-  const snapshot = JSON.stringify(entries);
-  if (snapshot === lastSnapshot || Object.keys(entries).length === 0) return;
+  const fingerprint = fingerprintProfileEntries(entries);
+  if (
+    fingerprint === lastFingerprint ||
+    Object.keys(entries).length === 0
+  ) {
+    return;
+  }
   try {
     await window.fzTerminal.profile.save(entries);
-    lastSnapshot = snapshot;
+    lastFingerprint = fingerprint;
   } catch (error) {
     console.warn("Unable to back up the FZ Terminal profile", error);
   }

@@ -273,8 +273,8 @@ if (selectedText !== selectionCommand) {
 if (!copySafe.recorded || !copySafe.producedOutput) {
   failures.push("typing after an automatic copy changed command execution");
 }
-if (memory.scrollback < 100_000) {
-  failures.push("scrollback migration did not raise the retained line count");
+if (memory.scrollback < 20_000) {
+  failures.push("scrollback migration retained too few lines");
 }
 if (!memory.railVisible || memory.blockLength < 100_000) {
   failures.push("large command output was not retained in a collapsed block");

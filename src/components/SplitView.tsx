@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import {
   Files,
   Globe2,
@@ -22,11 +22,25 @@ import type {
   Workspace,
 } from "../types";
 import { useAppStore } from "../store/appStore";
-import { BrowserPane } from "./BrowserPane";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
-import { FilesPane, type FileTerminalAction } from "./FilesPane";
-import { NotePane } from "./NotePane";
+import type { FileTerminalAction } from "./FilesPane";
 import { TerminalPane } from "./TerminalPane";
+
+const BrowserPane = lazy(() =>
+  import("./BrowserPane").then((module) => ({
+    default: module.BrowserPane,
+  })),
+);
+const FilesPane = lazy(() =>
+  import("./FilesPane").then((module) => ({
+    default: module.FilesPane,
+  })),
+);
+const NotePane = lazy(() =>
+  import("./NotePane").then((module) => ({
+    default: module.NotePane,
+  })),
+);
 
 type PaneNode = SplitNode & { type: "pane" };
 
@@ -120,52 +134,58 @@ export function SplitView(props: SplitViewProps) {
           />
         )}
         {kind === "browser" && (
-          <BrowserPane
-            id={node.id}
-            tabs={
-              node.browserTabs?.length
-                ? node.browserTabs
-                : [
-                    {
-                      id: node.id,
-                      url:
-                        node.browserUrl ??
-                        tab.browserUrl ??
-                        "https://www.google.com/",
-                    },
-                  ]
-            }
-            activeTabId={node.activeBrowserTabId ?? node.id}
-            visible={browserVisible}
-            onChange={(value) =>
-              updatePane(workspace.id, tab.id, node.id, value)
-            }
-            onPaneContextMenu={setPaneMenu}
-          />
+          <Suspense fallback={null}>
+            <BrowserPane
+              id={node.id}
+              tabs={
+                node.browserTabs?.length
+                  ? node.browserTabs
+                  : [
+                      {
+                        id: node.id,
+                        url:
+                          node.browserUrl ??
+                          tab.browserUrl ??
+                          "https://www.google.com/",
+                      },
+                    ]
+              }
+              activeTabId={node.activeBrowserTabId ?? node.id}
+              visible={browserVisible}
+              onChange={(value) =>
+                updatePane(workspace.id, tab.id, node.id, value)
+              }
+              onPaneContextMenu={setPaneMenu}
+            />
+          </Suspense>
         )}
         {kind === "files" && (
-          <FilesPane
-            workspaceId={workspace.id}
-            initialPath={node.filePath ?? tab.filePath ?? "~"}
-            initialRemotePath={node.remoteFilePath}
-            remoteConnectionId={node.remoteConnectionId}
-            onStateChange={(value) =>
-              updatePane(workspace.id, tab.id, node.id, value)
-            }
-            onOpenInTerminal={onOpenInTerminal}
-            onOpenRemoteInTerminal={onOpenRemoteInTerminal}
-            onClosePane={() => onClosePane(node)}
-          />
+          <Suspense fallback={null}>
+            <FilesPane
+              workspaceId={workspace.id}
+              initialPath={node.filePath ?? tab.filePath ?? "~"}
+              initialRemotePath={node.remoteFilePath}
+              remoteConnectionId={node.remoteConnectionId}
+              onStateChange={(value) =>
+                updatePane(workspace.id, tab.id, node.id, value)
+              }
+              onOpenInTerminal={onOpenInTerminal}
+              onOpenRemoteInTerminal={onOpenRemoteInTerminal}
+              onClosePane={() => onClosePane(node)}
+            />
+          </Suspense>
         )}
         {kind === "note" && (
-          <NotePane
-            key={node.id}
-            initialContent={node.noteContent ?? tab.noteContent ?? ""}
-            onNewTab={() => addTab(workspace.id, { kind: "note" })}
-            onChange={(noteContent) =>
-              updatePane(workspace.id, tab.id, node.id, { noteContent })
-            }
-          />
+          <Suspense fallback={null}>
+            <NotePane
+              key={node.id}
+              initialContent={node.noteContent ?? tab.noteContent ?? ""}
+              onNewTab={() => addTab(workspace.id, { kind: "note" })}
+              onChange={(noteContent) =>
+                updatePane(workspace.id, tab.id, node.id, { noteContent })
+              }
+            />
+          </Suspense>
         )}
         {kind !== "terminal" && (
           <PaneActions
