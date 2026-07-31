@@ -88,14 +88,14 @@ authorization automatically. Direct installation also works, but the `./`
 prefix is required so APT treats it as a local file:
 
 ```bash
-sudo apt install ./release/FZ-Terminal-0.4.0-amd64.deb
+sudo apt install ./release/FZ-Terminal-0.4.1-amd64.deb
 ```
 
 Or run the portable AppImage:
 
 ```bash
-chmod +x ./release/FZ-Terminal-0.4.0-x86_64.AppImage
-./release/FZ-Terminal-0.4.0-x86_64.AppImage
+chmod +x ./release/FZ-Terminal-0.4.1-x86_64.AppImage
+./release/FZ-Terminal-0.4.1-x86_64.AppImage
 ```
 
 Windows and macOS packages produced on Linux are unsigned. Public macOS
