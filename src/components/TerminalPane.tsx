@@ -205,6 +205,17 @@ export function TerminalPane({
   }, [settings.terminal.fileCompletion]);
 
   useEffect(() => {
+    if (settings.terminal.commandSuggestions) return;
+    const frame = requestAnimationFrame(() => {
+      commandSuggestionsRef.current = [];
+      setCommandSuggestions([]);
+      setSuggestionSuffix("");
+      setSuggestionPosition(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [settings.terminal.commandSuggestions]);
+
+  useEffect(() => {
     if (screenScrollEnabled || !screenCopyModeRef.current) return;
     window.fzTerminal.pty.write(pane.sessionId, "\x1b");
     screenCopyModeRef.current = false;
@@ -269,6 +280,23 @@ export function TerminalPane({
       }
       terminal?.focus();
     };
+    const copyOrInterrupt = (event: Event) => {
+      const sessionId = (event as CustomEvent<string>).detail;
+      if (sessionId !== pane.sessionId) return;
+      const terminal = terminalRef.current;
+      if (terminal?.hasSelection()) {
+        void window.fzTerminal.clipboard.writeText(terminal.getSelection());
+      } else {
+        inputBufferRef.current = "";
+        commandSuggestionsRef.current = [];
+        setCommandSuggestions([]);
+        setSuggestionSuffix("");
+        setSuggestionPosition(null);
+        setCompletion(null);
+        window.fzTerminal.pty.write(pane.sessionId, "\x03");
+      }
+      terminal?.focus();
+    };
     const pasteTerminal = (event: Event) => {
       const sessionId = (event as CustomEvent<string>).detail;
       if (sessionId !== pane.sessionId) return;
@@ -281,6 +309,7 @@ export function TerminalPane({
     window.addEventListener("fz:show-completions", showCompletions);
     window.addEventListener("fz:quick-command", quickCommand);
     window.addEventListener("fz:copy-terminal", copyTerminal);
+    window.addEventListener("fz:copy-or-interrupt", copyOrInterrupt);
     window.addEventListener("fz:paste-terminal", pasteTerminal);
     return () => {
       window.removeEventListener("fz:search-terminal", openSearch);
@@ -288,6 +317,7 @@ export function TerminalPane({
       window.removeEventListener("fz:show-completions", showCompletions);
       window.removeEventListener("fz:quick-command", quickCommand);
       window.removeEventListener("fz:copy-terminal", copyTerminal);
+      window.removeEventListener("fz:copy-or-interrupt", copyOrInterrupt);
       window.removeEventListener("fz:paste-terminal", pasteTerminal);
     };
   }, [pane.sessionId]);
@@ -491,6 +521,7 @@ export function TerminalPane({
     const updateCommandSuggestions = (input: string) => {
       const query = input;
       if (
+        !settingsRef.current.terminal.commandSuggestions ||
         foregroundCommandRef.current ||
         !query.trim() ||
         /[\r\n]/.test(query)
@@ -523,6 +554,7 @@ export function TerminalPane({
       else setSuggestionPosition(null);
     };
     const acceptCommandSuggestion = () => {
+      if (!settingsRef.current.terminal.commandSuggestions) return false;
       if (foregroundCommandRef.current) return false;
       const suggestion = commandSuggestionsRef.current[0];
       const input = inputBufferRef.current;

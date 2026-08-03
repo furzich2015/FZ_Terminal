@@ -24,6 +24,7 @@ import type {
   ThemeId,
 } from "../types";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
+import { findShortcutConflicts } from "../lib/shortcuts";
 import { fonts, paletteFromTheme, themes } from "../lib/themes";
 import {
   defaultSettings,
@@ -131,6 +132,11 @@ export function SettingsModal({
   const updateTerminal = useAppStore((state) => state.updateTerminal);
   const setShortcut = useAppStore((state) => state.setShortcut);
   const resetShortcuts = useAppStore((state) => state.resetShortcuts);
+  const shortcutConflicts = findShortcutConflicts(
+    settings.shortcuts,
+    navigator.platform.includes("Mac") ? "meta" : "ctrl",
+  );
+  const shortcutConflictCount = Object.keys(shortcutConflicts).length;
 
   useEffect(() => {
     if (!open) return;
@@ -638,6 +644,14 @@ export function SettingsModal({
               </SettingsGroup>
               <SettingsGroup title="Remote sessions & completion">
                 <Toggle
+                  checked={settings.terminal.commandSuggestions}
+                  onChange={(commandSuggestions) =>
+                    updateTerminal({ commandSuggestions })
+                  }
+                  label="Command history autocomplete"
+                  description="Shows inline command-history suggestions that can be accepted with Tab. Disabled by default."
+                />
+                <Toggle
                   checked={settings.terminal.fileCompletion}
                   onChange={(fileCompletion) =>
                     updateTerminal({ fileCompletion })
@@ -687,6 +701,15 @@ export function SettingsModal({
               }
             >
               <SettingsGroup title="Application shortcuts">
+                {shortcutConflictCount > 0 && (
+                  <div className="shortcut-conflict-summary" role="alert">
+                    <AlertCircle size={14} />
+                    <span>
+                      {shortcutConflictCount} shortcut actions use duplicated
+                      combinations. Resolve the highlighted rows.
+                    </span>
+                  </div>
+                )}
                 <div className="shortcut-list">
                   {(Object.keys(shortcutLabels) as ShortcutAction[]).map(
                     (action) => (
@@ -694,6 +717,9 @@ export function SettingsModal({
                         action={action}
                         label={shortcutLabels[action]}
                         value={settings.shortcuts[action]}
+                        conflicts={(shortcutConflicts[action] ?? []).map(
+                          (candidate) => shortcutLabels[candidate],
+                        )}
                         onChange={(value) => setShortcut(action, value)}
                         key={action}
                       />
@@ -961,20 +987,40 @@ function ShortcutRecorder({
   action,
   label,
   value,
+  conflicts,
   onChange,
 }: {
   action: ShortcutAction;
   label: string;
   value: string;
+  conflicts: string[];
   onChange: (value: string) => void;
 }) {
   const [recording, setRecording] = useState(false);
 
   useEffect(() => {
+    const stopOtherRecorder = (event: Event) => {
+      if ((event as CustomEvent<ShortcutAction>).detail !== action) {
+        setRecording(false);
+      }
+    };
+    window.addEventListener("fz:shortcut-recording-start", stopOtherRecorder);
+    return () =>
+      window.removeEventListener(
+        "fz:shortcut-recording-start",
+        stopOtherRecorder,
+      );
+  }, [action]);
+
+  useEffect(() => {
     if (!recording) return;
+    document.documentElement.dataset.shortcutRecording = action;
     const capture = (event: KeyboardEvent) => {
+      if (document.documentElement.dataset.shortcutRecording !== action) {
+        return;
+      }
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
       if (event.key === "Escape") {
         setRecording(false);
         return;
@@ -984,33 +1030,70 @@ function ShortcutRecorder({
       setRecording(false);
     };
     window.addEventListener("keydown", capture, true);
-    return () => window.removeEventListener("keydown", capture, true);
-  }, [onChange, recording]);
+    return () => {
+      window.removeEventListener("keydown", capture, true);
+      if (document.documentElement.dataset.shortcutRecording === action) {
+        delete document.documentElement.dataset.shortcutRecording;
+      }
+    };
+  }, [action, onChange, recording]);
 
   return (
-    <div className="shortcut-row">
-      <span>{label}</span>
-      <button
-        className={`shortcut-recorder ${recording ? "recording" : ""}`}
-        type="button"
-        data-action={action}
-        onClick={() => setRecording(true)}
-      >
-        {recording ? "Press shortcut…" : prettifyShortcut(value)}
-      </button>
+    <div className={`shortcut-row ${conflicts.length > 0 ? "conflict" : ""}`}>
+      <span className="shortcut-label">
+        <span>{label}</span>
+        {conflicts.length > 0 && (
+          <small>Also assigned to: {conflicts.join(", ")}</small>
+        )}
+      </span>
+      <div className="shortcut-control">
+        {conflicts.length > 0 && (
+          <AlertCircle
+            className="shortcut-conflict-icon"
+            size={14}
+            aria-label="Duplicated shortcut"
+          />
+        )}
+        <button
+          className={`shortcut-recorder ${recording ? "recording" : ""}`}
+          type="button"
+          data-action={action}
+          aria-invalid={conflicts.length > 0}
+          onClick={() => {
+            window.dispatchEvent(
+              new CustomEvent("fz:shortcut-recording-start", {
+                detail: action,
+              }),
+            );
+            setRecording(true);
+          }}
+        >
+          {recording ? "Press shortcut…" : prettifyShortcut(value)}
+        </button>
+      </div>
     </div>
   );
 }
 
 function shortcutFromEvent(event: KeyboardEvent) {
   const parts: string[] = [];
-  if (event.ctrlKey || event.metaKey) parts.push("Primary");
+  const isMac = navigator.platform.includes("Mac");
+  if ((isMac && event.metaKey) || (!isMac && event.ctrlKey)) {
+    parts.push("Primary");
+  }
+  if (isMac && event.ctrlKey) parts.push("Ctrl");
+  if (!isMac && event.metaKey) parts.push("Meta");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  const key =
-    event.key.length === 1
-      ? event.key.toUpperCase()
-      : event.key.replace("Arrow", "Arrow");
+  const key = /^Key[A-Z]$/.test(event.code)
+    ? event.code.slice(3)
+    : /^Digit\d$/.test(event.code)
+      ? event.code
+      : event.key === " "
+        ? "Space"
+        : event.key.length === 1
+          ? event.key.toUpperCase()
+          : event.key;
   parts.push(key);
   return parts.join("+");
 }

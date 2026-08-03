@@ -92,6 +92,7 @@ export const defaultSettings: AppSettings = {
     copyOnSelect: true,
     screenScrollMode: false,
     fileCompletion: true,
+    commandSuggestions: false,
     searchHighlightAll: true,
     searchHighlightColor: "#f6c85f",
   },

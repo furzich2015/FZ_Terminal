@@ -18,7 +18,7 @@ import type {
   Workspace,
 } from "./types";
 import { applyTheme, resolveTheme } from "./lib/themes";
-import { matchesShortcut } from "./lib/shortcuts";
+import { isPlainCtrlC, matchesShortcut } from "./lib/shortcuts";
 import { selectFileTerminalCandidate } from "./lib/terminalContext";
 import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import {
@@ -242,6 +242,7 @@ export function App() {
   };
 
   const onGlobalKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    if (document.documentElement.dataset.shortcutRecording) return;
     const target = event.target as HTMLElement | null;
     const terminalInput = target?.classList.contains(
       "xterm-helper-textarea",
@@ -251,6 +252,23 @@ export function App() {
       (target?.matches("input, textarea, select") ||
         target?.isContentEditable)
     ) {
+      return;
+    }
+
+    if (
+      terminalInput &&
+      activeTerminalPane &&
+      isPlainCtrlC(event) &&
+      (matchesShortcut(event, settings.shortcuts.copyTerminal) ||
+        matchesShortcut(event, settings.shortcuts.sendInterrupt))
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      window.dispatchEvent(
+        new CustomEvent("fz:copy-or-interrupt", {
+          detail: activeTerminalPane.sessionId,
+        }),
+      );
       return;
     }
 
