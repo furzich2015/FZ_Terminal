@@ -84,17 +84,25 @@ contextBridge.exposeInMainWorld("fzTerminal", {
     kill: (id) => {
       if (isSessionId(id)) ipcRenderer.send("pty:kill", id);
     },
-    listDirectory: (id, directory) => {
+    listDirectory: (id, directory, currentDirectory) => {
       if (!isSessionId(id)) throw new Error("Invalid session id");
       if (
-        directory !== undefined &&
-        (typeof directory !== "string" ||
-          directory.length > 2048 ||
-          directory.includes("\0"))
+        [directory, currentDirectory].some(
+          (value) =>
+            value !== undefined &&
+            (typeof value !== "string" ||
+              value.length > 2048 ||
+              value.includes("\0")),
+        )
       ) {
         throw new Error("Invalid directory");
       }
-      return ipcRenderer.invoke("pty:list-directory", id, directory);
+      return ipcRenderer.invoke(
+        "pty:list-directory",
+        id,
+        directory,
+        currentDirectory,
+      );
     },
     getContext: (id) => {
       if (!isSessionId(id)) throw new Error("Invalid session id");

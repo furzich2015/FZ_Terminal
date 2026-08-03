@@ -9,6 +9,7 @@ import {
 import type {
   ShortcutAction,
   TabKind,
+  PtyContext,
   QuickCommand,
   RemoteConnection,
   SplitDirection,
@@ -17,6 +18,8 @@ import type {
   Workspace,
 } from "./types";
 import { applyTheme, resolveTheme } from "./lib/themes";
+import { matchesShortcut } from "./lib/shortcuts";
+import { selectFileTerminalCandidate } from "./lib/terminalContext";
 import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import {
   collectBrowserPaneIds,
@@ -472,24 +475,83 @@ export function App() {
     return pane ? { sessionId: pane.sessionId, delay } : null;
   }
 
-  function openPathInTerminal(
-    path: string,
-    directory: boolean,
-    action: "cat" | "nano" | "less" | "grep" = "cat",
-    pattern = "",
+  async function getFileTerminalTarget(connection?: RemoteConnection) {
+    if (!activeWorkspace) return null;
+    const workspace =
+      useAppStore
+        .getState()
+        .workspaces.find((item) => item.id === activeWorkspace.id) ??
+      activeWorkspace;
+    const candidates = workspace.tabs
+      .flatMap((tab) =>
+        collectPanesByKind(tab.root, "terminal").map((pane) => ({
+          tab,
+          pane,
+        })),
+      )
+      .sort((left, right) => {
+        const leftScore =
+          (left.tab.id === workspace.activeTabId ? 0 : 2) +
+          (left.pane.id === left.tab.activePaneId ? 0 : 1);
+        const rightScore =
+          (right.tab.id === workspace.activeTabId ? 0 : 2) +
+          (right.pane.id === right.tab.activePaneId ? 0 : 1);
+        return leftScore - rightScore;
+      });
+    const inspected = await Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          const context = await window.fzTerminal.pty.getContext(
+            candidate.pane.sessionId,
+          );
+          return { ...candidate, context };
+        } catch {
+          return {
+            ...candidate,
+            context: {
+              remote: true,
+              multiplexer: null,
+            } satisfies PtyContext,
+          };
+        }
+      }),
+    );
+    const selected = selectFileTerminalCandidate(inspected, connection);
+
+    if (selected) {
+      let delay = 0;
+      if (selected.tab.id !== workspace.activeTabId) {
+        setActiveTab(workspace.id, selected.tab.id);
+        delay = 80;
+      }
+      if (selected.pane.id !== selected.tab.activePaneId) {
+        setActivePane(workspace.id, selected.tab.id, selected.pane.id);
+        delay = Math.max(delay, 30);
+      }
+      return {
+        sessionId: selected.pane.sessionId,
+        delay: Math.max(delay, selected.context.exists === false ? 140 : 0),
+        remote: selected.context.remote,
+      };
+    }
+
+    const created = addTab(workspace.id, { kind: "terminal" });
+    const nextWorkspace = useAppStore
+      .getState()
+      .workspaces.find((item) => item.id === workspace.id);
+    const tab = nextWorkspace?.tabs.find(
+      (item) => item.id === created.tabId,
+    );
+    const pane = tab ? findPane(tab.root, created.paneId) : null;
+    return pane
+      ? { sessionId: pane.sessionId, delay: 140, remote: false }
+      : null;
+  }
+
+  function executeFileTerminalCommand(
+    target: { sessionId: string; delay: number },
+    command: string,
   ) {
-    const target = getTerminalTarget();
-    if (!target) return;
-    const quotedPath = quoteShell(path);
-    const command = directory
-      ? `cd -- ${quotedPath}`
-      : action === "nano"
-        ? `nano -- ${quotedPath}`
-        : action === "less"
-          ? `less -- ${quotedPath}`
-          : action === "grep"
-            ? `grep --color=always -n -- ${quoteShell(pattern)} ${quotedPath}`
-            : `cat -- ${quotedPath}`;
     window.setTimeout(() => {
       window.dispatchEvent(
         new CustomEvent("fz:quick-command", {
@@ -504,16 +566,50 @@ export function App() {
     }, target.delay);
   }
 
-  function openRemotePathInTerminal(
+  async function openPathInTerminal(
+    path: string,
+    directory: boolean,
+    action: "cat" | "nano" | "less" | "grep" = "cat",
+    pattern = "",
+  ) {
+    const target = await getFileTerminalTarget();
+    if (!target) return;
+    const quotedPath = quoteShell(path);
+    const command = directory
+      ? `cd -- ${quotedPath}`
+      : action === "nano"
+        ? `nano -- ${quotedPath}`
+        : action === "less"
+          ? `less -- ${quotedPath}`
+          : action === "grep"
+            ? `grep --color=always -n -- ${quoteShell(pattern)} ${quotedPath}`
+            : `cat -- ${quotedPath}`;
+    executeFileTerminalCommand(target, command);
+  }
+
+  async function openRemotePathInTerminal(
     connection: RemoteConnection,
     remotePath: string,
     directory: boolean,
     action: "cat" | "nano" | "less" | "grep" = "cat",
     pattern = "",
   ) {
-    const target = getTerminalTarget();
+    const target = await getFileTerminalTarget(connection);
     if (!target) return;
     const quotedPath = quoteShell(remotePath);
+    if (target.remote) {
+      const command = directory
+        ? `cd -- ${quotedPath}`
+        : action === "nano"
+          ? `nano -- ${quotedPath}`
+          : action === "less"
+            ? `less -- ${quotedPath}`
+            : action === "grep"
+              ? `grep --color=always -n -- ${quoteShell(pattern)} ${quotedPath}`
+              : `cat -- ${quotedPath}`;
+      executeFileTerminalCommand(target, command);
+      return;
+    }
     const remoteCommand = directory
       ? `cd -- ${quotedPath} && exec "\${SHELL:-/bin/sh}" -l`
       : action === "nano"
@@ -523,22 +619,11 @@ export function App() {
           : action === "grep"
             ? `grep --color=always -n -- ${quoteShell(pattern)} ${quotedPath}`
             : `cat -- ${quotedPath}`;
-    void window.fzTerminal.files
+    await window.fzTerminal.files
       .remoteTerminalArgs(connection, remoteCommand)
       .then((sshArguments) => {
         const command = `ssh ${sshArguments.map(quoteShell).join(" ")}`;
-        window.setTimeout(() => {
-          window.dispatchEvent(
-            new CustomEvent("fz:quick-command", {
-              detail: {
-                sessionId: target.sessionId,
-                command,
-                execute: true,
-              },
-            }),
-          );
-          window.fzTerminal.pty.write(target.sessionId, `${command}\r`);
-        }, target.delay);
+        executeFileTerminalCommand(target, command);
       })
       .catch(() => undefined);
   }
@@ -775,6 +860,19 @@ function findFirstPaneByKind(
   );
 }
 
+function collectPanesByKind(
+  node: SplitNode,
+  kind: TabKind,
+): (SplitNode & { type: "pane" })[] {
+  if (node.type === "pane") {
+    return (node.kind ?? "terminal") === kind ? [node] : [];
+  }
+  return [
+    ...collectPanesByKind(node.first, kind),
+    ...collectPanesByKind(node.second, kind),
+  ];
+}
+
 function quoteShell(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -784,33 +882,4 @@ function centerOf(rect: DOMRect) {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
   };
-}
-
-function matchesShortcut(event: KeyboardEvent, shortcut: string) {
-  const parts = shortcut
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const key = parts.at(-1)?.toLowerCase();
-  const wantsPrimary = parts.some(
-    (part) => part.toLowerCase() === "primary",
-  );
-  const wantsCtrl = parts.some((part) => part.toLowerCase() === "ctrl");
-  const wantsMeta = parts.some(
-    (part) => ["meta", "cmd", "command"].includes(part.toLowerCase()),
-  );
-  const wantsAlt = parts.some((part) => part.toLowerCase() === "alt");
-  const wantsShift = parts.some((part) => part.toLowerCase() === "shift");
-
-  const keyMatches =
-    event.key.toLowerCase() === key ||
-    event.code.toLowerCase() === key?.replace("arrow", "arrow");
-  return (
-    keyMatches &&
-    (!wantsPrimary || event.ctrlKey || event.metaKey) &&
-    (!wantsCtrl || event.ctrlKey) &&
-    (!wantsMeta || event.metaKey) &&
-    event.altKey === wantsAlt &&
-    event.shiftKey === wantsShift
-  );
 }

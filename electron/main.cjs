@@ -12,9 +12,18 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
-const { execFile, spawn } = require("node:child_process");
+const { execFile, execFileSync, spawn } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const pty = require("node-pty");
+const {
+  analyzeSshCommand,
+  parseSshConnection,
+  resolveRemoteCompletionDirectory,
+} = require("./ssh-context.cjs");
+const {
+  foregroundStateFromLinuxProcStat,
+  foregroundStateFromPsOutput,
+} = require("./pty-context.cjs");
 
 const sessions = new Map();
 const browserViews = new Map();
@@ -441,10 +450,15 @@ function createTerminalSession(event, options) {
     backlogChunks: [],
     backlogLength: 0,
     cwd: workingDirectory,
+    inputBuffer: "",
+    observedConnection: null,
   };
   sessions.set(id, session);
 
   terminalProcess.onData((data) => {
+    if (/Connection to .+ closed[.]?/i.test(data)) {
+      session.observedConnection = null;
+    }
     appendTerminalBacklog(session, data);
     if (!session.owner.isDestroyed()) {
       session.owner.send("pty:data", { id, data });
@@ -459,6 +473,36 @@ function createTerminalSession(event, options) {
   });
 
   return { id, backlog: "", pid: terminalProcess.pid };
+}
+
+function trackSessionInput(session, data) {
+  if (data.startsWith("\x1b")) return;
+  for (const character of data) {
+    if (character === "\r" || character === "\n") {
+      const command = session.inputBuffer.trim();
+      session.inputBuffer = "";
+      if (/^(?:exit|logout)$/.test(command)) {
+        session.observedConnection = null;
+        continue;
+      }
+      const observed = analyzeSshCommand(
+        command,
+        sessionWorkingDirectory(session),
+      );
+      if (observed) session.observedConnection = observed.connection;
+    } else if (character === "\x7f" || character === "\b") {
+      session.inputBuffer = session.inputBuffer.slice(0, -1);
+    } else if (character === "\x15" || character === "\x03") {
+      session.inputBuffer = "";
+    } else if (character === "\x04") {
+      session.observedConnection = null;
+    } else if (character.charCodeAt(0) >= 32) {
+      session.inputBuffer += character;
+      if (session.inputBuffer.length > 8192) {
+        session.inputBuffer = session.inputBuffer.slice(-8192);
+      }
+    }
+  }
 }
 
 function appendTerminalBacklog(session, data) {
@@ -558,9 +602,35 @@ function getDescendantProcesses(rootPid) {
   return processes;
 }
 
+function getSessionForegroundState(session) {
+  if (process.platform === "linux") {
+    try {
+      return foregroundStateFromLinuxProcStat(
+        fs.readFileSync(`/proc/${session.process.pid}/stat`, "utf8"),
+      );
+    } catch {
+      return undefined;
+    }
+  }
+  if (["darwin", "freebsd", "openbsd"].includes(process.platform)) {
+    try {
+      return foregroundStateFromPsOutput(
+        execFileSync(
+          "ps",
+          ["-o", "pgid=,tpgid=", "-p", String(session.process.pid)],
+          { encoding: "utf8", timeout: 250 },
+        ),
+      );
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 function getSessionContext(id) {
   const session = sessions.get(id);
-  if (!session) return { remote: false, multiplexer: null };
+  if (!session) return { exists: false, remote: false, multiplexer: null };
   const processes = getDescendantProcesses(session.process.pid);
   const commands = processes.flatMap(
     ({ command, argv0 }) =>
@@ -568,7 +638,7 @@ function getSessionContext(id) {
         .filter(Boolean)
         .map((value) => path.basename(value)),
   );
-  const remote = commands.some((command) =>
+  const processRemote = commands.some((command) =>
     /^(ssh|sshpass|sftp|mosh-client|telnet)$/.test(command),
   );
   const multiplexer = commands.some((command) => command === "screen")
@@ -580,97 +650,67 @@ function getSessionContext(id) {
     ({ command, argv0 }) =>
       path.basename(command) === "ssh" || path.basename(argv0) === "ssh",
   );
+  const observedConnection = session.observedConnection || undefined;
+  const fallbackConnection =
+    process.platform === "linux" ? undefined : observedConnection;
+  const connection = sshProcess
+    ? parseSshConnection(
+        sshProcess.args,
+        sessionWorkingDirectory(session),
+      )
+    : fallbackConnection;
+  const foreground = getSessionForegroundState(session);
   return {
-    remote,
+    exists: true,
+    remote: processRemote || Boolean(fallbackConnection),
+    verified: Boolean(sshProcess),
+    ...(foreground ? { busy: foreground.busy } : {}),
     multiplexer,
-    ...(sshProcess ? { connection: parseSshConnection(sshProcess.args) } : {}),
+    ...(connection ? { connection } : {}),
   };
 }
 
-function parseSshConnection(args) {
-  let user;
-  let port = 22;
-  let target = "";
-  const optionsWithValue = new Set([
-    "-b",
-    "-c",
-    "-D",
-    "-E",
-    "-e",
-    "-F",
-    "-I",
-    "-i",
-    "-J",
-    "-L",
-    "-l",
-    "-m",
-    "-O",
-    "-o",
-    "-p",
-    "-Q",
-    "-R",
-    "-S",
-    "-W",
-    "-w",
-  ]);
-  for (let index = 1; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === "--") {
-      target = args[index + 1] || "";
-      break;
-    }
-    if (argument === "-l" && args[index + 1]) {
-      user = args[index + 1];
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith("-l") && argument.length > 2) {
-      user = argument.slice(2);
-      continue;
-    }
-    if (argument === "-p" && /^\d+$/.test(args[index + 1] || "")) {
-      port = Number(args[index + 1]);
-      index += 1;
-      continue;
-    }
-    if (/^-p\d+$/.test(argument)) {
-      port = Number(argument.slice(2));
-      continue;
-    }
-    if (optionsWithValue.has(argument)) {
-      index += 1;
-      continue;
-    }
-    if (!argument.startsWith("-")) {
-      target = argument;
-      break;
-    }
-  }
-  if (!target) return undefined;
-  const at = target.lastIndexOf("@");
-  const host = at >= 0 ? target.slice(at + 1) : target;
-  if (at >= 0) user = target.slice(0, at);
-  if (!host || /[\s\0]/.test(host)) return undefined;
-  return {
-    host,
-    ...(user ? { user } : {}),
-    port: Math.min(65535, Math.max(1, port || 22)),
-  };
-}
-
-function listSessionDirectory(id, requestedDirectory) {
-  const session = sessions.get(id);
-  if (!session) return { cwd: "", entries: [] };
-  const context = getSessionContext(id);
-  if (context.remote) return { cwd: "", entries: [], remote: true };
-
-  let cwd = session.cwd;
+function sessionWorkingDirectory(session) {
   if (process.platform === "linux") {
     try {
-      cwd = fs.readlinkSync(`/proc/${session.process.pid}/cwd`);
+      return fs.readlinkSync(`/proc/${session.process.pid}/cwd`);
     } catch {
       // Fall back to the session's startup directory.
     }
+  }
+  return session.cwd;
+}
+
+async function listSessionDirectory(
+  id,
+  requestedDirectory,
+  currentDirectory,
+) {
+  const session = sessions.get(id);
+  if (!session) return { cwd: "", entries: [] };
+  const context = getSessionContext(id);
+  if (context.remote) {
+    if (!context.connection) {
+      return { cwd: "", entries: [], remote: true };
+    }
+    const targetDirectory = resolveRemoteCompletionDirectory(
+      currentDirectory,
+      requestedDirectory,
+    );
+    return listRemoteFileDirectory(
+      context.connection,
+      targetDirectory,
+    );
+  }
+
+  let cwd = sessionWorkingDirectory(session);
+  if (
+    process.platform !== "linux" &&
+    currentDirectory &&
+    path.isAbsolute(currentDirectory) &&
+    fs.existsSync(currentDirectory)
+  ) {
+    cwd = currentDirectory;
   }
 
   let targetDirectory = cwd;
@@ -1807,7 +1847,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle("pty:create", createTerminalSession);
   ipcMain.on("pty:input", (_event, { id, data }) => {
-    if (typeof data === "string") sessions.get(id)?.process.write(data);
+    if (typeof data !== "string") return;
+    const session = sessions.get(id);
+    if (!session) return;
+    trackSessionInput(session, data);
+    session.process.write(data);
   });
   ipcMain.on("pty:resize", (_event, { id, cols, rows }) => {
     const session = sessions.get(id);
@@ -1819,8 +1863,8 @@ app.whenReady().then(() => {
     }
   });
   ipcMain.on("pty:kill", (_event, id) => killSession(id));
-  ipcMain.handle("pty:list-directory", (_event, id, directory) =>
-    listSessionDirectory(id, directory),
+  ipcMain.handle("pty:list-directory", (_event, id, directory, currentDirectory) =>
+    listSessionDirectory(id, directory, currentDirectory),
   );
   ipcMain.handle("pty:get-context", (_event, id) => getSessionContext(id));
 

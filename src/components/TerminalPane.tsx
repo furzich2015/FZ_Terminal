@@ -50,6 +50,7 @@ import type {
   ThemeDefinition,
 } from "../types";
 import { buildFontStack } from "../lib/themes";
+import { detectTerminalDirectory } from "../lib/terminalContext";
 import { useAppStore } from "../store/appStore";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
@@ -65,6 +66,7 @@ interface CompletionPopup {
   cwd: string;
   x: number;
   y: number;
+  maxHeight: number;
 }
 
 interface InlineSuggestionPosition {
@@ -118,12 +120,17 @@ export function TerminalPane({
   const fitTerminalRef = useRef<() => void>(() => undefined);
   const settingsRef = useRef(settings);
   const themeRef = useRef(theme);
+  const titleRef = useRef("Shell");
   const screenScrollEnabledRef = useRef(settings.terminal.screenScrollMode);
   const screenCopyModeRef = useRef(false);
   const inputBufferRef = useRef("");
   const commandGroupsRef = useRef(commandGroups);
   const commandHistoryRef = useRef(loadCommandHistory());
   const commandSuggestionsRef = useRef<string[]>([]);
+  const foregroundCommandRef = useRef(false);
+  const foregroundTrackingAvailableRef = useRef(
+    !navigator.userAgent.includes("Windows"),
+  );
   const activeBlockIdRef = useRef<string | null>(null);
   const pendingOutputRef = useRef("");
   const historyFlushTimerRef = useRef<number | null>(null);
@@ -188,6 +195,16 @@ export function TerminalPane({
   }, [commandGroups, screenScrollEnabled, settings, theme]);
 
   useEffect(() => {
+    if (settings.terminal.fileCompletion) return;
+    const frame = requestAnimationFrame(() => {
+      setCompletion(null);
+      setCompletionSearch("");
+      setCompletionNotice(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [settings.terminal.fileCompletion]);
+
+  useEffect(() => {
     if (screenScrollEnabled || !screenCopyModeRef.current) return;
     window.fzTerminal.pty.write(pane.sessionId, "\x1b");
     screenCopyModeRef.current = false;
@@ -236,6 +253,9 @@ export function TerminalPane({
       if (detail.execute) {
         recordCommandRef.current(detail.command);
         inputBufferRef.current = "";
+        foregroundCommandRef.current =
+          foregroundTrackingAvailableRef.current &&
+          Boolean(detail.command.trim());
       }
       terminalRef.current?.focus();
       requestAnimationFrame(() => terminalRef.current?.focus());
@@ -297,6 +317,17 @@ export function TerminalPane({
     const host = hostRef.current;
     if (!host) return;
     let disposed = false;
+    let foregroundSyncTimer: number | null = null;
+    let syncSessionContext: () => Promise<void> = async () => {};
+    const scheduleForegroundSync = (delay = 90) => {
+      if (foregroundSyncTimer !== null) {
+        window.clearTimeout(foregroundSyncTimer);
+      }
+      foregroundSyncTimer = window.setTimeout(() => {
+        foregroundSyncTimer = null;
+        void syncSessionContext();
+      }, delay);
+    };
 
     const initialSettings = settingsRef.current;
     const fitAddon = new FitAddon();
@@ -415,6 +446,12 @@ export function TerminalPane({
       );
     };
     recordCommandRef.current = startCommandBlock;
+    const clearCommandSuggestions = () => {
+      commandSuggestionsRef.current = [];
+      setCommandSuggestions([]);
+      setSuggestionSuffix("");
+      setSuggestionPosition(null);
+    };
     const positionCommandSuggestion = () => {
       if (commandSuggestionsRef.current.length === 0) {
         setSuggestionPosition(null);
@@ -453,11 +490,12 @@ export function TerminalPane({
     positionCommandSuggestionRef.current = scheduleSuggestionPosition;
     const updateCommandSuggestions = (input: string) => {
       const query = input;
-      if (!query.trim() || /[\r\n]/.test(query)) {
-        commandSuggestionsRef.current = [];
-        setCommandSuggestions([]);
-        setSuggestionSuffix("");
-        setSuggestionPosition(null);
+      if (
+        foregroundCommandRef.current ||
+        !query.trim() ||
+        /[\r\n]/.test(query)
+      ) {
+        clearCommandSuggestions();
         return;
       }
       const quickCommands = commandGroupsRef.current.flatMap((group) =>
@@ -485,6 +523,7 @@ export function TerminalPane({
       else setSuggestionPosition(null);
     };
     const acceptCommandSuggestion = () => {
+      if (foregroundCommandRef.current) return false;
       const suggestion = commandSuggestionsRef.current[0];
       const input = inputBufferRef.current;
       if (!suggestion || !suggestion.startsWith(input)) return false;
@@ -500,11 +539,23 @@ export function TerminalPane({
       return true;
     };
     const trackInput = (data: string) => {
+      if (foregroundCommandRef.current) {
+        if (data.includes("\x03") || data.includes("\x04")) {
+          inputBufferRef.current = "";
+          scheduleForegroundSync();
+        }
+        clearCommandSuggestions();
+        return;
+      }
       if (data.startsWith("\x1b")) return;
       for (const character of data) {
         if (character === "\r" || character === "\n") {
           const command = inputBufferRef.current;
           startCommandBlock(command);
+          foregroundCommandRef.current =
+            foregroundTrackingAvailableRef.current &&
+            Boolean(command.trim());
+          if (foregroundCommandRef.current) scheduleForegroundSync();
           if (isScreenCommand(command)) {
             screenDetectedRef.current = true;
             setScreenDetected(true);
@@ -550,28 +601,75 @@ export function TerminalPane({
       const pathSeparator =
         token.includes("\\") && !token.includes("/") ? "\\" : "/";
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
-      const cellWidth = screen ? screen.clientWidth / terminal.cols : 8;
-      const cellHeight = screen ? screen.clientHeight / terminal.rows : 17;
+      const paneElement = host.closest<HTMLElement>(".terminal-pane");
+      const screenRect = screen?.getBoundingClientRect();
+      const paneRect = paneElement?.getBoundingClientRect();
+      const cellWidth = screenRect ? screenRect.width / terminal.cols : 8;
+      const cellHeight = screenRect ? screenRect.height / terminal.rows : 17;
+      const cursorLeft =
+        (screenRect && paneRect ? screenRect.left - paneRect.left : 0) +
+        terminal.buffer.active.cursorX * cellWidth;
+      const cursorBottom =
+        (screenRect && paneRect ? screenRect.top - paneRect.top : 0) +
+        (terminal.buffer.active.cursorY + 1) * cellHeight;
+      const paneWidth = paneRect?.width ?? host.clientWidth;
+      const paneHeight = paneRect?.height ?? host.clientHeight;
+      const popupWidth = Math.min(330, Math.max(120, paneWidth - 20));
       const x = Math.min(
-        Math.max(8, terminal.buffer.active.cursorX * cellWidth + 9),
-        Math.max(8, host.clientWidth - 330),
+        Math.max(8, cursorLeft),
+        Math.max(8, paneWidth - popupWidth - 8),
       );
-      const y = Math.min(
-        Math.max(8, (terminal.buffer.active.cursorY + 1) * cellHeight + 9),
-        Math.max(8, host.clientHeight - 230),
+      const y = Math.max(8, cursorBottom + 6);
+      const maxHeight = Math.max(
+        80,
+        Math.min(330, paneHeight - y - 8),
+      );
+      const buffer = terminal.buffer.active;
+      const promptLines = Array.from({ length: 6 }, (_, offset) =>
+        buffer
+          .getLine(buffer.baseY + buffer.cursorY - offset)
+          ?.translateToString(true) ?? "",
+      );
+      const currentDirectory = detectTerminalDirectory(
+        promptLines,
+        titleRef.current,
       );
       setCompletion(null);
       setCompletionSearch("");
-      const listing = await window.fzTerminal.pty.listDirectory(
-        pane.sessionId,
-        directoryToken || undefined,
-      );
-      if (disposed) return;
-      if (listing.remote) {
-        remoteSessionRef.current = true;
+      try {
+        const listing = await window.fzTerminal.pty.listDirectory(
+          pane.sessionId,
+          directoryToken || undefined,
+          currentDirectory || undefined,
+        );
+        if (disposed) return;
+        remoteSessionRef.current = Boolean(listing.remote);
+        if (listing.remote && !listing.cwd) {
+          throw new Error("Remote SSH context is unavailable");
+        }
+        const items = listing.entries.filter(
+          (entry) =>
+            (tokenLeaf.startsWith(".") || !entry.name.startsWith(".")) &&
+            (!tokenLeaf || entry.name.startsWith(tokenLeaf)),
+        );
+        setCompletion({
+          items,
+          token,
+          pathSeparator,
+          needsSeparator: !hasArguments && input.trim().length > 0,
+          cwd: listing.cwd,
+          x,
+          y,
+          maxHeight,
+        });
+        terminal.focus();
+      } catch {
+        if (disposed) return;
         setCompletion(null);
         setCompletionNotice(
-          "Local file suggestions are disabled in SSH. Tab was sent to the server.",
+          remoteSessionRef.current
+            ? "Remote files could not be loaded. Tab was sent to the active SSH shell."
+            : "File suggestions are unavailable. Tab was sent to the shell.",
         );
         if (completionNoticeTimerRef.current) {
           window.clearTimeout(completionNoticeTimerRef.current);
@@ -582,28 +680,7 @@ export function TerminalPane({
         );
         window.fzTerminal.pty.write(pane.sessionId, "\t");
         terminal.focus();
-        return;
       }
-      remoteSessionRef.current = false;
-      const items = listing.entries.filter(
-        (entry) =>
-          (tokenLeaf.startsWith(".") || !entry.name.startsWith(".")) &&
-          (!tokenLeaf || entry.name.startsWith(tokenLeaf)),
-      );
-      setCompletion(
-        items.length > 0
-          ? {
-              items,
-              token,
-              pathSeparator,
-              needsSeparator: !hasArguments && input.trim().length > 0,
-              cwd: listing.cwd,
-              x,
-              y,
-            }
-          : null,
-      );
-      terminal.focus();
     };
     requestCompletionRef.current = () => void requestCompletion();
 
@@ -638,12 +715,6 @@ export function TerminalPane({
         return;
       }
       if (data === "\t" && settingsRef.current.terminal.fileCompletion) {
-        if (remoteSessionRef.current) {
-          setCompletion(null);
-          trackInput(data);
-          window.fzTerminal.pty.write(pane.sessionId, data);
-          return;
-        }
         void requestCompletion();
         return;
       }
@@ -658,6 +729,7 @@ export function TerminalPane({
       window.fzTerminal.pty.write(pane.sessionId, data);
     });
     const disposeTitle = terminal.onTitleChange((value) => {
+      titleRef.current = value || "Shell";
       setTitle(value || "Shell");
     });
     const disposeBell = terminal.onBell(() => {
@@ -710,12 +782,25 @@ export function TerminalPane({
     };
     host.addEventListener("paste", handleNativePaste, true);
 
-    const syncSessionContext = async () => {
+    syncSessionContext = async () => {
       try {
         const context = await window.fzTerminal.pty.getContext(
           pane.sessionId,
         );
         if (disposed) return;
+        if (typeof context.busy === "boolean") {
+          foregroundTrackingAvailableRef.current = true;
+          const wasBusy = foregroundCommandRef.current;
+          foregroundCommandRef.current = context.busy;
+          if (context.busy) {
+            clearCommandSuggestions();
+          } else if (wasBusy) {
+            updateCommandSuggestions(inputBufferRef.current);
+          }
+        } else if (context.exists !== false) {
+          foregroundTrackingAvailableRef.current = false;
+          foregroundCommandRef.current = false;
+        }
         if (context.remote || navigator.userAgent.includes("Linux")) {
           remoteSessionRef.current = context.remote;
         }
@@ -747,6 +832,7 @@ export function TerminalPane({
       }
       terminal.write(event.data, scheduleSuggestionPosition);
       appendHistoryOutput(event.data);
+      if (foregroundCommandRef.current) scheduleForegroundSync();
     });
     const stopExit = window.fzTerminal.pty.onExit((event) => {
       if (event.id !== pane.sessionId) return;
@@ -871,6 +957,9 @@ export function TerminalPane({
       if (completionNoticeTimerRef.current) {
         window.clearTimeout(completionNoticeTimerRef.current);
       }
+      if (foregroundSyncTimer !== null) {
+        window.clearTimeout(foregroundSyncTimer);
+      }
       window.clearInterval(contextInterval);
       flushHistoryOutput();
       observer.disconnect();
@@ -929,6 +1018,9 @@ export function TerminalPane({
     if (fastExecution) {
       recordCommandRef.current(command.command);
       inputBufferRef.current = "";
+      foregroundCommandRef.current =
+        foregroundTrackingAvailableRef.current &&
+        Boolean(command.command.trim());
     }
     window.fzTerminal.pty.write(
       pane.sessionId,
@@ -1404,15 +1496,17 @@ export function TerminalPane({
       {completion && (
         <div
           className="completion-popup"
-          style={{ left: completion.x, top: completion.y }}
+          style={{
+            left: completion.x,
+            top: completion.y,
+            maxHeight: completion.maxHeight,
+          }}
           onMouseDown={(event) => event.stopPropagation()}
           onWheel={(event) => event.stopPropagation()}
         >
           <header>
             <FolderSearch size={12} />
-            <span title={completion.cwd}>
-              {completion.cwd.split("/").filter(Boolean).at(-1) || "/"}
-            </span>
+            <span title={completion.cwd}>{completion.cwd}</span>
             <kbd>TAB</kbd>
           </header>
           <label className="completion-search">

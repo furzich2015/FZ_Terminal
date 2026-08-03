@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type {
   AppSettings,
   CommandGroup,
+  DetectedRemoteConnection,
   FontId,
   NewTabOptions,
   QuickCommand,
@@ -481,7 +482,7 @@ interface AppStore {
   ) => string;
   upsertDetectedConnection: (
     workspaceId: string,
-    value: Pick<RemoteConnection, "host" | "user" | "port">,
+    value: DetectedRemoteConnection,
   ) => string;
   removeConnection: (connectionId: string) => void;
   updateGeneral: (value: Partial<AppSettings["general"]>) => void;
@@ -825,6 +826,7 @@ export const useAppStore = create<AppStore>()(
       upsertDetectedConnection: (workspaceId, value) => {
         const normalizedUser = value.user?.trim() || undefined;
         const normalizedPort = value.port || 22;
+        const detectedIdentityFile = value.identityFile?.trim() || undefined;
         const existing = get().connections.find(
           (item) =>
             item.host === value.host &&
@@ -832,13 +834,20 @@ export const useAppStore = create<AppStore>()(
             item.port === normalizedPort,
         );
         if (existing) {
-          if (!existing.workspaceIds.includes(workspaceId)) {
+          if (
+            !existing.workspaceIds.includes(workspaceId) ||
+            (!existing.identityFile && detectedIdentityFile)
+          ) {
             set((state) => ({
               connections: state.connections.map((item) =>
                 item.id === existing.id
                   ? {
                       ...item,
-                      workspaceIds: [...item.workspaceIds, workspaceId],
+                      identityFile:
+                        item.identityFile ?? detectedIdentityFile,
+                      workspaceIds: item.workspaceIds.includes(workspaceId)
+                        ? item.workspaceIds
+                        : [...item.workspaceIds, workspaceId],
                     }
                   : item,
               ),
@@ -859,6 +868,7 @@ export const useAppStore = create<AppStore>()(
               user: normalizedUser,
               port: normalizedPort,
               rootPath: "~",
+              identityFile: detectedIdentityFile,
               workspaceIds: [workspaceId],
               source: "detected",
             },
