@@ -147,6 +147,7 @@ describe("appearance customization", () => {
     expect(defaultSettings.appearance.uiFontSize).toBe(14);
     expect(defaultSettings.appearance.uiFontFamily).toBe("system-ui");
     expect(defaultSettings.terminal.copyOnSelect).toBe(true);
+    expect(defaultSettings.terminal.commandSuggestions).toBe(false);
 
     const appearance = {
       ...defaultSettings.appearance,

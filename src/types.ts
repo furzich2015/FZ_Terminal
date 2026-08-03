@@ -208,6 +208,7 @@ export interface AppSettings {
     copyOnSelect: boolean;
     screenScrollMode: boolean;
     fileCompletion: boolean;
+    commandSuggestions: boolean;
     searchHighlightAll: boolean;
     searchHighlightColor: string;
   };

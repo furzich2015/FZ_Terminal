@@ -1704,6 +1704,46 @@ select:focus-visible {
   border-bottom: 0;
 }
 
+.shortcut-row.conflict {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+
+.shortcut-label {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shortcut-label small,
+.shortcut-conflict-icon {
+  color: var(--danger);
+}
+
+.shortcut-label small {
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.shortcut-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shortcut-conflict-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .shortcut-recorder {
   min-width: 130px;
   height: 27px;
@@ -1722,6 +1762,11 @@ select:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.shortcut-recorder[aria-invalid="true"]:not(.recording) {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--border));
+  color: var(--danger);
 }
 
 .command-summary {

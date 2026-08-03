@@ -153,13 +153,13 @@ const shell = await evaluate(`(() => {
 await evaluate(
   `document.querySelector('.titlebar-actions button[title="Settings"]')?.click()`,
 );
-await delay(80);
+await delay(320);
 await evaluate(`(() => {
   [...document.querySelectorAll(".settings-nav > button")]
     .find((button) => button.textContent.trim() === "Appearance")
     ?.click();
 })()`);
-await delay(80);
+await delay(180);
 const themes = await evaluate(
   `document.querySelectorAll(".theme-card").length`,
 );
@@ -270,6 +270,30 @@ await delay(100);
 const tabDrag = await evaluate(
   `[...document.querySelectorAll(".tab")].map((tab) => tab.dataset.tabId)`,
 );
+
+await evaluate(
+  `document.querySelector('.titlebar-actions button[title="Settings"]')?.click()`,
+);
+await delay(80);
+await evaluate(`(() => {
+  [...document.querySelectorAll(".settings-nav > button")]
+    .find((button) => button.textContent.trim() === "Terminal")
+    ?.click();
+})()`);
+await delay(80);
+const commandAutocompleteEnabled = await evaluate(`(() => {
+  const row = [...document.querySelectorAll(".toggle-row")].find(
+    (item) => item.querySelector("strong")?.textContent ===
+      "Command history autocomplete",
+  );
+  const input = row?.querySelector('input[type="checkbox"]');
+  if (input && !input.checked) input.click();
+  return Boolean(input?.checked);
+})()`);
+await evaluate(
+  `document.querySelector('.modal-card button[aria-label="Close"]')?.click()`,
+);
+await delay(80);
 
 await evaluate(
   `document.querySelector('.tab[data-tab-kind="terminal"] .tab-main')?.click()`,
@@ -528,6 +552,7 @@ const report = {
     moved: tabDrag.indexOf(secondNoteId) < tabDrag.indexOf(firstNoteId),
   },
   suggestion: {
+    enabled: commandAutocompleteEnabled,
     value: suggestion,
     accepted: suggestionAccepted,
     matched: suggestion === marker.slice(-4),
@@ -560,7 +585,11 @@ if (liveAccent !== "#12abde") {
 }
 if (!report.notes.independent) failures.push("note tabs still share content");
 if (!report.tabDrag.moved) failures.push("tab drag ordering failed");
-if (!report.suggestion.matched || !report.suggestion.accepted) {
+if (
+  !report.suggestion.enabled ||
+  !report.suggestion.matched ||
+  !report.suggestion.accepted
+) {
   failures.push("command-history autocomplete failed");
 }
 if (!emoji) failures.push("emoji text did not render in xterm");
