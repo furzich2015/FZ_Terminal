@@ -74,6 +74,7 @@ export interface DetectedRemoteConnection {
   host: string;
   user?: string;
   port: number;
+  identityFile?: string;
 }
 
 export interface QuickCommand {
@@ -323,7 +324,10 @@ export interface FileReadResult {
 }
 
 export interface PtyContext {
+  exists?: boolean;
   remote: boolean;
+  verified?: boolean;
+  busy?: boolean;
   multiplexer: "screen" | "tmux" | null;
   connection?: DetectedRemoteConnection;
 }
@@ -396,6 +400,7 @@ export interface FzTerminalBridge {
     listDirectory: (
       id: string,
       directory?: string,
+      currentDirectory?: string,
     ) => Promise<DirectoryListing>;
     getContext: (id: string) => Promise<PtyContext>;
     onData: (callback: (event: PtyDataEvent) => void) => () => void;

@@ -1,6 +1,6 @@
 {
   "name": "fz-terminal",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "description": "A minimal, high-functionality macOS-inspired desktop terminal",
   "author": {
     "name": "FZ Terminal contributors",
@@ -26,10 +26,13 @@
     "icons:linux": "env -u ELECTRON_RUN_AS_NODE electron scripts/render-linux-icons.cjs",
     "prepare:native-assets": "node scripts/prepare-native-assets.cjs",
     "prepare:linux-release": "node scripts/prepare-linux-release.mjs",
+    "prepare:macos-release": "node scripts/prepare-macos-release.mjs",
+    "prepare:release": "node scripts/prepare-release.mjs",
     "package:linux": "npm run icons:linux && npm run build && electron-builder --linux AppImage deb && npm run prepare:linux-release",
     "release:linux": "npm run icons:linux && npm run build && electron-builder --linux AppImage deb --publish always && npm run prepare:linux-release",
     "package:windows": "npm run icons:linux && npm run build && electron-builder --win nsis --x64",
-    "package:macos": "npm run icons:linux && npm run prepare:native-assets && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac zip --x64 --arm64 --config.npmRebuild=false",
+    "package:macos": "npm run icons:linux && npm run prepare:native-assets && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir --x64 --arm64 --config.npmRebuild=false && npm run prepare:macos-release",
+    "package:all": "npm run package:linux && npm run package:windows && npm run package:macos && npm run prepare:release",
     "package:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {

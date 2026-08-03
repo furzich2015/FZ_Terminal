@@ -164,3 +164,28 @@ describe("appearance customization", () => {
     expect(theme.xterm.background).toBe("rgba(16, 24, 32, 0.5)");
   });
 });
+
+describe("detected SSH connections", () => {
+  it("keeps the identity file used by the terminal session", () => {
+    const original = useAppStore.getState();
+    try {
+      useAppStore.setState({ connections: [] });
+      const id = useAppStore.getState().upsertDetectedConnection(
+        original.workspaces[0].id,
+        {
+          host: "server.internal",
+          user: "root",
+          port: 22,
+          identityFile: "/opt/fz-test/server-key",
+        },
+      );
+
+      expect(
+        useAppStore.getState().connections.find((item) => item.id === id)
+          ?.identityFile,
+      ).toBe("/opt/fz-test/server-key");
+    } finally {
+      useAppStore.setState({ connections: original.connections });
+    }
+  });
+});

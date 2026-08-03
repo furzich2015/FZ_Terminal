@@ -642,8 +642,8 @@ export function SettingsModal({
                   onChange={(fileCompletion) =>
                     updateTerminal({ fileCompletion })
                   }
-                  label="Shell-native file completion"
-                  description="Tab opens local suggestions only in a local shell. During SSH, local suggestions are disabled and Tab is forwarded to the remote server."
+                  label="File search popup on Tab"
+                  description="Shows files from the terminal’s current local or SSH directory. Turn it off to send Tab directly to the active shell."
                 />
                 <Toggle
                   checked={settings.terminal.screenScrollMode}

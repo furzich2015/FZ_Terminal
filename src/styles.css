@@ -2889,7 +2889,11 @@ select:focus-visible {
 }
 
 .completion-popup > header span {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .completion-popup > header kbd {
