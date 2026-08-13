@@ -39,12 +39,10 @@ const PROFILE_BACKUP_LIMIT = 24 * 1024 * 1024;
 const UPDATE_CHECK_INTERVAL = 4 * 60 * 60 * 1_000;
 const RELEASES_URL =
   "https://github.com/furzich2015/FZ_Terminal/releases";
-let mainWindow = null;
 let isQuitting = false;
 let updateCheckTimer = null;
 let updateCheckInFlight = false;
 let systemFontCache = null;
-let currentWindowOpacity = 1;
 let autoUpdater = null;
 let browserSessionConfigured = false;
 let updateStatus = {
@@ -62,6 +60,8 @@ const importedProfileFrom = migrateLegacyChromiumProfile(
   canonicalUserDataPath,
   [defaultUserDataPath],
 );
+const ownsSingleInstanceLock = app.requestSingleInstanceLock();
+if (!ownsSingleInstanceLock) app.quit();
 
 if (/^\d{2,5}$/.test(process.env.FZ_CDP_PORT || "")) {
   app.commandLine.appendSwitch(
@@ -405,7 +405,9 @@ function createTerminalSession(event, options) {
   const terminalRows = Math.max(1, Math.floor(rows));
   const existing = sessions.get(id);
   if (existing) {
-    existing.owner = event.sender;
+    if (existing.owner !== event.sender) {
+      throw new Error("Terminal session belongs to another window");
+    }
     try {
       existing.process.resize(terminalCols, terminalRows);
     } catch {
@@ -809,7 +811,7 @@ async function applyBrowserViewOpacity(entry) {
   }
   try {
     entry.opacityStyleKey = await entry.view.webContents.insertCSS(
-      `:root { opacity: ${currentWindowOpacity} !important; }`,
+      `:root { opacity: ${entry.opacity} !important; }`,
       { cssOrigin: "user" },
     );
   } catch {
@@ -822,7 +824,9 @@ function destroyBrowserView(id, owner) {
   if (!entry || (owner && entry.owner !== owner)) return;
   browserViews.delete(id);
   try {
-    mainWindow?.contentView.removeChildView(entry.view);
+    BrowserWindow.fromWebContents(entry.owner)?.contentView.removeChildView(
+      entry.view,
+    );
   } catch {
     // The parent window may already be closing.
   }
@@ -832,7 +836,8 @@ function destroyBrowserView(id, owner) {
 }
 
 function createBrowserView(event, id, requestedUrl, bounds) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!ownerWindow || ownerWindow.isDestroyed()) return;
   ensureBrowserSessionConfigured();
   const existing = browserViews.get(id);
   if (
@@ -860,6 +865,7 @@ function createBrowserView(event, id, requestedUrl, bounds) {
     owner: event.sender,
     bounds: sanitizeBounds(bounds),
     opacityStyleKey: null,
+    opacity: ownerWindow.getOpacity(),
   };
   browserViews.set(id, entry);
   view.setBackgroundColor(
@@ -867,7 +873,7 @@ function createBrowserView(event, id, requestedUrl, bounds) {
   );
   view.setBounds(entry.bounds);
   view.setVisible(false);
-  mainWindow.contentView.addChildView(view);
+  ownerWindow.contentView.addChildView(view);
   view.webContents.setUserAgent(browserUserAgent());
 
   const update = () => sendBrowserState(id, entry);
@@ -933,36 +939,78 @@ function resolveFileDirectory(requestedDirectory) {
   return path.resolve(requestedDirectory);
 }
 
-function listFileDirectory(requestedDirectory) {
-  const targetDirectory = resolveFileDirectory(requestedDirectory);
-  const entries = fs
-    .readdirSync(targetDirectory, { withFileTypes: true })
-    .slice(0, 1000)
-    .map((entry) => {
-      const entryPath = path.join(targetDirectory, entry.name);
-      let size;
-      let modified;
-      try {
-        const stats = fs.statSync(entryPath);
-        size = stats.size;
-        modified = stats.mtimeMs;
-      } catch {
-        // Keep inaccessible entries visible without metadata.
+async function listFileDirectory(requestValue) {
+  const request =
+    requestValue && typeof requestValue === "object"
+      ? requestValue
+      : { path: requestValue };
+  const targetDirectory = resolveFileDirectory(request.path);
+  const sudoPassword = request.sudoPassword
+    ? normalizeSudoPassword(request.sudoPassword)
+    : "";
+  try {
+    let rawEntries;
+    if (sudoPassword) {
+      const script = [
+        'directory="$1"',
+        'for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do',
+        '  if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then continue; fi',
+        '  if [ -d "$entry" ]; then kind=d; else kind=f; fi',
+        "  printf '%s\\000%s\\000' \"$kind\" \"$entry\"",
+        "done",
+      ].join("\n");
+      const result = await runLocalSudo(
+        "sh",
+        ["-c", script, "fz-terminal-list", targetDirectory],
+        sudoPassword,
+        undefined,
+        { maxBuffer: 9 * 1024 * 1024 },
+      );
+      const fields = result.stdout.toString("utf8").split("\0");
+      rawEntries = [];
+      for (let index = 0; index + 1 < fields.length; index += 2) {
+        const kind = fields[index];
+        const entryPath = fields[index + 1];
+        if (!entryPath) continue;
+        rawEntries.push({
+          name: path.basename(entryPath),
+          path: path.normalize(entryPath),
+          directory: kind === "d",
+        });
+        if (rawEntries.length >= 1000) break;
       }
-      return {
-        name: entry.name,
-        path: entryPath,
-        directory: entry.isDirectory(),
-        size,
-        modified,
-      };
-    })
-    .sort(
-      (left, right) =>
-        Number(right.directory) - Number(left.directory) ||
-        left.name.localeCompare(right.name),
-    );
-  return { cwd: targetDirectory, entries };
+    } else {
+      rawEntries = fs
+        .readdirSync(targetDirectory, { withFileTypes: true })
+        .slice(0, 1000)
+        .map((entry) => ({
+          name: entry.name,
+          path: path.join(targetDirectory, entry.name),
+          directory: entry.isDirectory(),
+        }));
+    }
+    const entries = rawEntries
+      .map((entry) => {
+        let size;
+        let modified;
+        try {
+          const stats = fs.statSync(entry.path);
+          size = stats.size;
+          modified = stats.mtimeMs;
+        } catch {
+          // Keep privileged entries visible even when metadata is restricted.
+        }
+        return { ...entry, size, modified };
+      })
+      .sort(
+        (left, right) =>
+          Number(right.directory) - Number(left.directory) ||
+          left.name.localeCompare(right.name),
+      );
+    return { cwd: targetDirectory, entries };
+  } catch (error) {
+    throw fileOperationError(error, undefined, "Cannot open directory");
+  }
 }
 
 function normalizeRemoteConnection(value) {
@@ -1060,8 +1108,12 @@ function listRemoteFileDirectory(
   connectionValue,
   requestedDirectory,
   force = false,
+  sudoPasswordValue,
 ) {
   const connection = normalizeRemoteConnection(connectionValue);
+  const sudoPassword = sudoPasswordValue
+    ? normalizeSudoPassword(sudoPasswordValue)
+    : "";
   const requested =
     typeof requestedDirectory === "string" && requestedDirectory.trim()
       ? requestedDirectory.trim()
@@ -1079,8 +1131,22 @@ function listRemoteFileDirectory(
     'case "$requested" in "~") requested="$HOME";; "~/"*) requested="$HOME/${requested#~/}";; esac',
     'cd -- "$requested" || exit 72',
     "printf '%s\\0' \"$PWD\"",
-    "find . -mindepth 1 -maxdepth 1 -printf '%f\\0%y\\0%s\\0%T@\\0' 2>/dev/null | head -c 8388608",
+    "find . -mindepth 1 -maxdepth 1 -printf '%f\\0%y\\0%s\\0%T@\\0'",
   ].join("; ");
+  const privilegedListScript = [
+    'cd -- "$1" || exit 72',
+    "printf '%s\\0' \"$PWD\"",
+    "find . -mindepth 1 -maxdepth 1 -printf '%f\\0%y\\0%s\\0%T@\\0'",
+  ].join("; ");
+  const operationScript = sudoPassword
+    ? [
+        `requested=${quoteRemoteShell(requested)}`,
+        'case "$requested" in "~") requested="$HOME";; "~/"*) requested="$HOME/${requested#~/}";; esac',
+        remoteSudoScript(
+          `sh -c ${quoteRemoteShell(privilegedListScript)} fz-terminal-list "$requested"`,
+        ),
+      ].join("; ")
+    : remoteScript;
   const target = sshConnectionTarget(connection);
   const args = [
     "-p",
@@ -1092,10 +1158,10 @@ function listRemoteFileDirectory(
     ...sshControlOptions(connection),
     ...(connection.identityFile ? ["-i", connection.identityFile] : []),
     target,
-    remoteScript,
+    operationScript,
   ];
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       "ssh",
       args,
       {
@@ -1151,6 +1217,9 @@ function listRemoteFileDirectory(
         resolve(listing);
       },
     );
+    if (sudoPassword) {
+      child.stdin?.end(localSudoInput(sudoPassword));
+    }
   });
 }
 
@@ -1765,14 +1834,15 @@ async function openFileExternally(filePathValue) {
   if (error) throw new Error(error);
 }
 
-function createWindow() {
+function createWindow({ primary = false } = {}) {
   const devUrl = process.env.FZ_DEV_SERVER_URL;
   const productionUrl = pathToFileURL(
     path.join(__dirname, "..", "dist", "index.html"),
   ).href;
   const allowedUrl = devUrl || productionUrl;
+  const windowId = primary ? "primary" : crypto.randomUUID();
 
-  mainWindow = new BrowserWindow({
+  const applicationWindow = new BrowserWindow({
     width: 1360,
     height: 860,
     minWidth: 900,
@@ -1785,19 +1855,21 @@ function createWindow() {
     icon: path.join(__dirname, "..", "build", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: [`--fz-window-id=${windowId}`],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
     },
   });
+  const ownerWebContents = applicationWindow.webContents;
 
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  applicationWindow.setMenuBarVisibility(false);
+  applicationWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
   });
-  mainWindow.webContents.on("will-navigate", (event, url) => {
+  applicationWindow.webContents.on("will-navigate", (event, url) => {
     const allowed =
       devUrl
         ? new URL(url).origin === new URL(allowedUrl).origin
@@ -1806,67 +1878,103 @@ function createWindow() {
   });
 
   if (devUrl) {
-    void mainWindow.loadURL(devUrl);
+    void applicationWindow.loadURL(devUrl);
   } else {
-    void mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+    void applicationWindow.loadFile(
+      path.join(__dirname, "..", "dist", "index.html"),
+    );
   }
 
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
-  mainWindow.on("maximize", () => {
-    mainWindow?.webContents.send("window:maximized", true);
+  applicationWindow.once("ready-to-show", () => applicationWindow.show());
+  applicationWindow.on("maximize", () => {
+    applicationWindow.webContents.send("window:maximized", true);
   });
-  mainWindow.on("unmaximize", () => {
-    mainWindow?.webContents.send("window:maximized", false);
+  applicationWindow.on("unmaximize", () => {
+    applicationWindow.webContents.send("window:maximized", false);
   });
-  mainWindow.on("closed", () => {
-    for (const id of browserViews.keys()) destroyBrowserView(id);
-    mainWindow = null;
+  applicationWindow.on("closed", () => {
+    for (const [id, entry] of browserViews) {
+      if (entry.owner === ownerWebContents) {
+        destroyBrowserView(id, entry.owner);
+      }
+    }
+    for (const [id, terminalSession] of sessions) {
+      if (terminalSession.owner === ownerWebContents) {
+        killSession(id);
+      }
+    }
   });
+  return applicationWindow;
 }
 
 app.whenReady().then(() => {
-  ipcMain.on("window:minimize", () => mainWindow?.minimize());
-  ipcMain.on("window:toggle-maximize", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMaximized()) mainWindow.unmaximize();
-    else mainWindow.maximize();
+  if (!ownsSingleInstanceLock) return;
+  ipcMain.on("window:new", () => createWindow());
+  ipcMain.on("window:minimize", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
   });
-  ipcMain.on("window:close", () => mainWindow?.close());
-  ipcMain.on("window:set-opacity", (_event, value) => {
-    if (!mainWindow || !Number.isFinite(value)) return;
+  ipcMain.on("window:toggle-maximize", (event) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!targetWindow) return;
+    if (targetWindow.isMaximized()) targetWindow.unmaximize();
+    else targetWindow.maximize();
+  });
+  ipcMain.on("window:close", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
+  ipcMain.on("window:set-opacity", (event, value) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!targetWindow || !Number.isFinite(value)) return;
     const opacity = Math.min(1, Math.max(0.2, Number(value)));
-    currentWindowOpacity = opacity;
-    mainWindow.setBackgroundColor("#00000000");
-    mainWindow.setOpacity(opacity);
+    targetWindow.setBackgroundColor("#00000000");
+    targetWindow.setOpacity(opacity);
     for (const entry of browserViews.values()) {
-      void applyBrowserViewOpacity(entry);
+      if (entry.owner === event.sender) {
+        entry.opacity = opacity;
+        void applyBrowserViewOpacity(entry);
+      }
     }
   });
-  ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
+  ipcMain.handle("window:is-maximized", (event) =>
+    Boolean(BrowserWindow.fromWebContents(event.sender)?.isMaximized()),
+  );
   ipcMain.handle("fonts:list", listSystemFonts);
 
   ipcMain.handle("pty:create", createTerminalSession);
-  ipcMain.on("pty:input", (_event, { id, data }) => {
+  ipcMain.on("pty:input", (event, { id, data }) => {
     if (typeof data !== "string") return;
     const session = sessions.get(id);
-    if (!session) return;
+    if (!session || session.owner !== event.sender) return;
     trackSessionInput(session, data);
     session.process.write(data);
   });
-  ipcMain.on("pty:resize", (_event, { id, cols, rows }) => {
+  ipcMain.on("pty:resize", (event, { id, cols, rows }) => {
     const session = sessions.get(id);
-    if (!session) return;
+    if (!session || session.owner !== event.sender) return;
     try {
       session.process.resize(Math.max(2, cols), Math.max(1, rows));
     } catch {
       // Resize events can race with a shell exit.
     }
   });
-  ipcMain.on("pty:kill", (_event, id) => killSession(id));
-  ipcMain.handle("pty:list-directory", (_event, id, directory, currentDirectory) =>
-    listSessionDirectory(id, directory, currentDirectory),
+  ipcMain.on("pty:kill", (event, id) => {
+    if (sessions.get(id)?.owner === event.sender) killSession(id);
+  });
+  ipcMain.handle(
+    "pty:list-directory",
+    (event, id, directory, currentDirectory) => {
+      if (sessions.get(id)?.owner !== event.sender) {
+        throw new Error("Terminal session is unavailable");
+      }
+      return listSessionDirectory(id, directory, currentDirectory);
+    },
   );
-  ipcMain.handle("pty:get-context", (_event, id) => getSessionContext(id));
+  ipcMain.handle("pty:get-context", (event, id) => {
+    if (sessions.get(id)?.owner !== event.sender) {
+      return { exists: false };
+    }
+    return getSessionContext(id);
+  });
 
   ipcMain.handle("clipboard:read", () => clipboard.readText());
   ipcMain.handle("clipboard:write", (_event, text) => {
@@ -1923,13 +2031,18 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("files:home", () => os.homedir());
-  ipcMain.handle("files:list-directory", (_event, directory) =>
-    listFileDirectory(directory),
+  ipcMain.handle("files:list-directory", (_event, request) =>
+    listFileDirectory(request),
   );
   ipcMain.handle(
     "files:list-remote-directory",
-    (_event, connection, directory, force) =>
-      listRemoteFileDirectory(connection, directory, Boolean(force)),
+    (_event, connection, directory, force, sudoPassword) =>
+      listRemoteFileDirectory(
+        connection,
+        directory,
+        Boolean(force),
+        sudoPassword,
+      ),
   );
   ipcMain.handle("files:transfer", (_event, connection, request) =>
     transferRemoteFile(connection, request),
@@ -1977,7 +2090,7 @@ app.whenReady().then(() => {
   });
 
   if (app.isPackaged) configureAutoUpdater();
-  createWindow();
+  createWindow({ primary: true });
   if (app.isPackaged) {
     setTimeout(() => {
       void checkForUpdates();
@@ -1990,6 +2103,13 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+if (ownsSingleInstanceLock) {
+  app.on("second-instance", () => {
+    if (app.isReady()) createWindow();
+    else app.once("ready", () => createWindow());
+  });
+}
 
 function isPrivateNetworkIp(hostname) {
   const normalized = String(hostname || "")

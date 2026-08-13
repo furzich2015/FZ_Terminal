@@ -177,7 +177,9 @@ export function WorkspaceBar({
                 }}
               >
                 <span className="workspace-status" aria-hidden="true" />
-                <span>{workspace.name}</span>
+                <span className="workspace-name" title={workspace.name}>
+                  {workspace.name}
+                </span>
                 <span
                   className="pill-menu"
                   role="button"

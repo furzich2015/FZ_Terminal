@@ -169,7 +169,23 @@ export function FilesPane({
   const [confirmEditorClose, setConfirmEditorClose] = useState(false);
   const [sudoRequest, setSudoRequest] = useState<SudoRequest | null>(null);
   const readInitialPath = useEffectEvent(() => initialPath);
-  const reportInitialState = useEffectEvent(onStateChange);
+
+  const requestSudo = (
+    reason: unknown,
+    title: string,
+    run: (password: string) => Promise<void>,
+  ) => {
+    if (!isPermissionError(reason)) return false;
+    setSudoRequest({
+      title,
+      detail: formatFileError(
+        reason,
+        "This operation requires administrator permissions.",
+      ),
+      run,
+    });
+    return true;
+  };
 
   const fallbackConnectionId =
     connections.find((item) => item.workspaceIds.includes(workspaceId))?.id ??
@@ -198,17 +214,32 @@ export function FilesPane({
     [connections, workspaceId],
   );
 
-  const openLocalDirectory = async (directory?: string) => {
+  const openLocalDirectory = async (
+    directory?: string,
+    sudoPassword?: string,
+  ) => {
     setLocalLoading(true);
     setLocalError("");
     try {
-      const next = await window.fzTerminal.files.listDirectory(directory);
+      const next = await window.fzTerminal.files.listDirectory(
+        directory,
+        sudoPassword,
+      );
       setLocal(next);
       setLocalPath(next.cwd);
       setLocalSelected(null);
       onStateChange({ filePath: next.cwd });
     } catch (reason) {
+      if (
+        !sudoPassword &&
+        requestSudo(reason, "Open protected folder with sudo", (password) =>
+          openLocalDirectory(directory, password),
+        )
+      ) {
+        return;
+      }
       setLocalError(formatFileError(reason, "Cannot open local folder"));
+      if (sudoPassword) throw reason;
     } finally {
       setLocalLoading(false);
     }
@@ -218,6 +249,7 @@ export function FilesPane({
     connection: RemoteConnection,
     directory?: string,
     force = false,
+    sudoPassword?: string,
   ) => {
     setRemoteLoading(true);
     setRemoteError("");
@@ -226,6 +258,7 @@ export function FilesPane({
         connection,
         directory,
         force,
+        sudoPassword,
       );
       setRemote(next);
       setRemotePath(next.cwd);
@@ -235,11 +268,27 @@ export function FilesPane({
         remoteFilePath: next.cwd,
       });
     } catch (reason) {
+      if (
+        !sudoPassword &&
+        requestSudo(
+          reason,
+          "Open protected remote folder with sudo",
+          (password) =>
+            openRemoteDirectory(connection, directory, true, password),
+        )
+      ) {
+        return;
+      }
       setRemoteError(formatFileError(reason, "Cannot open remote folder"));
+      if (sudoPassword) throw reason;
     } finally {
       setRemoteLoading(false);
     }
   };
+
+  const openInitialDirectory = useEffectEvent((directory: string) =>
+    openLocalDirectory(directory),
+  );
 
   const loadRemoteConnection = useEffectEvent(
     (connectionId: string) => {
@@ -254,26 +303,7 @@ export function FilesPane({
   );
 
   useEffect(() => {
-    let disposed = false;
-    void window.fzTerminal.files
-      .listDirectory(readInitialPath())
-      .then((next) => {
-        if (disposed) return;
-        setLocal(next);
-        setLocalPath(next.cwd);
-        reportInitialState({ filePath: next.cwd });
-      })
-      .catch((reason: unknown) => {
-        if (!disposed) {
-          setLocalError(formatFileError(reason, "Cannot open folder"));
-        }
-      })
-      .finally(() => {
-        if (!disposed) setLocalLoading(false);
-      });
-    return () => {
-      disposed = true;
-    };
+    void openInitialDirectory(readInitialPath());
   }, []);
 
   useEffect(() => {
@@ -296,31 +326,19 @@ export function FilesPane({
     else setLocalError(message);
   };
 
-  const refreshSide = async (side: FileSide) => {
+  const refreshSide = async (side: FileSide, sudoPassword?: string) => {
     if (side === "remote") {
       if (selectedConnection) {
-        await openRemoteDirectory(selectedConnection, remote.cwd, true);
+        await openRemoteDirectory(
+          selectedConnection,
+          remote.cwd,
+          true,
+          sudoPassword,
+        );
       }
     } else {
-      await openLocalDirectory(local.cwd);
+      await openLocalDirectory(local.cwd, sudoPassword);
     }
-  };
-
-  const requestSudo = (
-    reason: unknown,
-    title: string,
-    run: (password: string) => Promise<void>,
-  ) => {
-    if (!isPermissionError(reason)) return false;
-    setSudoRequest({
-      title,
-      detail: formatFileError(
-        reason,
-        "This operation requires administrator permissions.",
-      ),
-      run,
-    });
-    return true;
   };
 
   const createDirectory = async (
@@ -347,7 +365,7 @@ export function FilesPane({
           : {}),
         ...(sudoPassword ? { sudoPassword } : {}),
       });
-      await refreshSide(side);
+      await refreshSide(side, sudoPassword);
       setTransferNotice(`Folder ${trimmedName} created.`);
       window.setTimeout(() => setTransferNotice(""), 3000);
     } catch (reason) {
@@ -378,7 +396,7 @@ export function FilesPane({
           : {}),
         ...(sudoPassword ? { sudoPassword } : {}),
       });
-      await refreshSide(side);
+      await refreshSide(side, sudoPassword);
       setTransferNotice(`${entry.name} deleted.`);
       window.setTimeout(() => setTransferNotice(""), 3000);
     } catch (reason) {
@@ -421,7 +439,7 @@ export function FilesPane({
           : {}),
         ...(sudoPassword ? { sudoPassword } : {}),
       });
-      await refreshSide(side);
+      await refreshSide(side, sudoPassword);
       setTransferNotice(
         `${fileNameFromPath(payload.path)} moved to ${targetDirectory}.`,
       );
@@ -528,7 +546,7 @@ export function FilesPane({
             }
           : current,
       );
-      await refreshSide(snapshot.side);
+      await refreshSide(snapshot.side, sudoPassword);
     } catch (reason) {
       if (
         !sudoPassword &&
@@ -586,9 +604,14 @@ export function FilesPane({
         `${entry.name} ${direction === "upload" ? "uploaded" : "downloaded"}.`,
       );
       if (direction === "upload") {
-        await openRemoteDirectory(selectedConnection, remote.cwd, true);
+        await openRemoteDirectory(
+          selectedConnection,
+          remote.cwd,
+          true,
+          sudoPassword,
+        );
       } else {
-        await openLocalDirectory(local.cwd);
+        await openLocalDirectory(local.cwd, sudoPassword);
       }
       window.setTimeout(() => setTransferNotice(""), 3000);
     } catch (reason) {

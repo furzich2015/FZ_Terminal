@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import {
+  createJSONStorage,
+  persist,
+  type StateStorage,
+} from "zustand/middleware";
 import type {
   AppSettings,
   CommandGroup,
@@ -21,6 +25,7 @@ import { fonts, paletteFromTheme, themes } from "../lib/themes";
 const createId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 export const shortcutLabels: Record<ShortcutAction, string> = {
+  newWindow: "New window",
   newTab: "New tab",
   closeTab: "Close tab",
   nextTab: "Next tab",
@@ -62,7 +67,7 @@ export const shortcutLabels: Record<ShortcutAction, string> = {
 
 export const defaultSettings: AppSettings = {
   general: {
-    restoreSession: true,
+    restoreSession: false,
     confirmBeforeClose: false,
     compactInterface: false,
   },
@@ -97,6 +102,7 @@ export const defaultSettings: AppSettings = {
     searchHighlightColor: "#f6c85f",
   },
   shortcuts: {
+    newWindow: "Primary+Shift+N",
     newTab: "Primary+Shift+T",
     closeTab: "Primary+Shift+W",
     nextTab: "Primary+PageDown",
@@ -110,7 +116,7 @@ export const defaultSettings: AppSettings = {
     activateTab7: "Primary+Digit7",
     activateTab8: "Primary+Digit8",
     activateLastTab: "Primary+Digit9",
-    newWorkspace: "Primary+Shift+N",
+    newWorkspace: "Primary+Alt+Shift+N",
     nextWorkspace: "Primary+Alt+Shift+ArrowRight",
     previousWorkspace: "Primary+Alt+Shift+ArrowLeft",
     splitHorizontal: "Primary+Shift+D",
@@ -458,6 +464,7 @@ interface AppStore {
         | "remoteFilePath"
         | "remoteConnectionId"
         | "noteContent"
+        | "noteScrollTop"
       >
     >,
   ) => void;
@@ -468,6 +475,14 @@ interface AppStore {
     direction: SplitDirection,
     kind?: TabKind,
   ) => string;
+  movePaneToSplit: (
+    workspaceId: string,
+    sourceTabId: string,
+    sourcePaneId: string,
+    targetTabId: string,
+    targetPaneId: string,
+    direction: SplitDirection,
+  ) => boolean;
   closePane: (workspaceId: string, tabId: string, paneId: string) => void;
   setSplitRatio: (
     workspaceId: string,
@@ -523,8 +538,127 @@ type PersistedAppState = Pick<
   | "sidebarVisible"
 >;
 
+const APP_STATE_STORAGE_KEY = "fz-terminal-state";
+const SHARED_PREFERENCES_STORAGE_KEY = "fz-terminal-preferences";
+const rendererWindowId =
+  typeof window === "undefined" ? "primary" : window.fzTerminal.window.id;
+const rendererStateStorageKey =
+  rendererWindowId === "primary"
+    ? APP_STATE_STORAGE_KEY
+    : `${APP_STATE_STORAGE_KEY}:${rendererWindowId}`;
+
+interface SharedPreferences {
+  settings?: AppSettings;
+  commandGroups?: CommandGroup[];
+  connections?: RemoteConnection[];
+}
+
+interface SyncStorage {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+}
+
+const memoryStorageEntries = new Map<string, string>();
+const memoryStorage: SyncStorage = {
+  getItem: (key) => memoryStorageEntries.get(key) ?? null,
+  setItem: (key, value) => memoryStorageEntries.set(key, value),
+  removeItem: (key) => memoryStorageEntries.delete(key),
+};
+
+function profileStorage(): SyncStorage {
+  return typeof localStorage === "undefined" ? memoryStorage : localStorage;
+}
+
+function sessionStateStorage(): SyncStorage {
+  return typeof sessionStorage === "undefined" ? memoryStorage : sessionStorage;
+}
+
+const windowStateStorage: StateStorage = {
+  getItem: () => {
+    const persistentStorage = profileStorage();
+    const ownStorage =
+      rendererWindowId === "primary" ? persistentStorage : sessionStateStorage();
+    const ownValue = ownStorage.getItem(rendererStateStorageKey);
+    let payload: { state?: Partial<PersistedAppState>; version?: number } | null =
+      null;
+    try {
+      payload = JSON.parse(ownValue ?? "null") as typeof payload;
+    } catch {
+      payload = null;
+    }
+
+    if (!payload && rendererWindowId !== "primary") {
+      try {
+        const primaryPayload = JSON.parse(
+          persistentStorage.getItem(APP_STATE_STORAGE_KEY) ?? "null",
+        ) as { state?: Partial<PersistedAppState> } | null;
+        if (primaryPayload?.state) {
+          payload = {
+            version: 13,
+            state: {
+              settings: primaryPayload.state.settings,
+              commandGroups: primaryPayload.state.commandGroups,
+              connections: primaryPayload.state.connections,
+            },
+          };
+        }
+      } catch {
+        payload = null;
+      }
+    }
+
+    let shared: SharedPreferences | null = null;
+    try {
+      shared = JSON.parse(
+        persistentStorage.getItem(SHARED_PREFERENCES_STORAGE_KEY) ?? "null",
+      ) as SharedPreferences | null;
+    } catch {
+      shared = null;
+    }
+    if (!payload && !shared) return null;
+    return JSON.stringify({
+      version: payload?.version ?? 13,
+      state: {
+        ...payload?.state,
+        ...(shared ?? {}),
+      },
+    });
+  },
+  setItem: (_name, value) => {
+    const persistentStorage = profileStorage();
+    const ownStorage =
+      rendererWindowId === "primary" ? persistentStorage : sessionStateStorage();
+    ownStorage.setItem(rendererStateStorageKey, value);
+    try {
+      const payload = JSON.parse(value) as {
+        state?: Partial<PersistedAppState>;
+      };
+      if (!payload.state) return;
+      const shared: SharedPreferences = {
+        settings: payload.state.settings,
+        commandGroups: payload.state.commandGroups,
+        connections: payload.state.connections,
+      };
+      const serialized = JSON.stringify(shared);
+      if (
+        persistentStorage.getItem(SHARED_PREFERENCES_STORAGE_KEY) !== serialized
+      ) {
+        persistentStorage.setItem(SHARED_PREFERENCES_STORAGE_KEY, serialized);
+      }
+    } catch {
+      // The primary state remains usable if shared preference sync is unavailable.
+    }
+  },
+  removeItem: () => {
+    const ownStorage =
+      rendererWindowId === "primary" ? profileStorage() : sessionStateStorage();
+    ownStorage.removeItem(rendererStateStorageKey);
+  },
+};
+
 export const useAppStore = create<AppStore>()(
-  persist(
+  persist<AppStore, [], [], PersistedAppState>(
     (set, get) => ({
       workspaces: [initialWorkspace],
       activeWorkspaceId: initialWorkspace.id,
@@ -753,6 +887,74 @@ export const useAppStore = create<AppStore>()(
           ),
         }));
         return pane.id;
+      },
+
+      movePaneToSplit: (
+        workspaceId,
+        sourceTabId,
+        sourcePaneId,
+        targetTabId,
+        targetPaneId,
+        direction,
+      ) => {
+        if (sourceTabId === targetTabId) return false;
+        const workspace = get().workspaces.find(
+          (item) => item.id === workspaceId,
+        );
+        const sourceTab = workspace?.tabs.find(
+          (item) => item.id === sourceTabId,
+        );
+        const targetTab = workspace?.tabs.find(
+          (item) => item.id === targetTabId,
+        );
+        const sourcePane = sourceTab
+          ? findPaneNode(sourceTab.root, sourcePaneId)
+          : null;
+        if (
+          !workspace ||
+          !sourceTab ||
+          !targetTab ||
+          !sourcePane ||
+          !findPaneNode(targetTab.root, targetPaneId)
+        ) {
+          return false;
+        }
+        const sourceRoot = removePane(sourceTab.root, sourcePaneId);
+        set((state) => ({
+          workspaces: state.workspaces.map((item) => {
+            if (item.id !== workspaceId) return item;
+            const tabs = item.tabs.flatMap((tab) => {
+              if (tab.id === sourceTabId) {
+                return sourceRoot
+                  ? [
+                      {
+                        ...tab,
+                        root: sourceRoot,
+                        activePaneId: firstPane(sourceRoot).id,
+                      },
+                    ]
+                  : [];
+              }
+              if (tab.id === targetTabId) {
+                return [
+                  {
+                    ...tab,
+                    root: splitNode(
+                      tab.root,
+                      targetPaneId,
+                      direction,
+                      sourcePane,
+                    ),
+                    activePaneId: sourcePane.id,
+                  },
+                ];
+              }
+              return [tab];
+            });
+            return { ...item, tabs, activeTabId: targetTabId };
+          }),
+        }));
+        return true;
       },
 
       closePane: (workspaceId, tabId, paneId) =>
@@ -1063,8 +1265,9 @@ export const useAppStore = create<AppStore>()(
         }),
     }),
     {
-      name: "fz-terminal-state",
-      version: 12,
+      name: rendererStateStorageKey,
+      storage: createJSONStorage<PersistedAppState>(() => windowStateStorage),
+      version: 13,
       migrate: (persistedState, version) => {
         const saved = persistedState as PersistedAppState;
         const migrated =
@@ -1281,25 +1484,45 @@ export const useAppStore = create<AppStore>()(
                   })),
                 })),
               };
-        if (version >= 12) return withBrowserTabs;
+        const withScrollbackDefault =
+          version >= 12
+            ? withBrowserTabs
+            : {
+                ...withBrowserTabs,
+                settings: {
+                  ...withBrowserTabs.settings,
+                  terminal: {
+                    ...withBrowserTabs.settings.terminal,
+                    scrollback:
+                      withBrowserTabs.settings.terminal.scrollback === 100_000
+                        ? defaultSettings.terminal.scrollback
+                        : withBrowserTabs.settings.terminal.scrollback,
+                  },
+                },
+              };
+        if (version >= 13) return withScrollbackDefault;
         return {
-          ...withBrowserTabs,
+          ...withScrollbackDefault,
           settings: {
-            ...withBrowserTabs.settings,
-            terminal: {
-              ...withBrowserTabs.settings.terminal,
-              scrollback:
-                withBrowserTabs.settings.terminal.scrollback === 100_000
-                  ? defaultSettings.terminal.scrollback
-                  : withBrowserTabs.settings.terminal.scrollback,
+            ...withScrollbackDefault.settings,
+            general: {
+              ...withScrollbackDefault.settings.general,
+              restoreSession: false,
+            },
+            shortcuts: {
+              ...withScrollbackDefault.settings.shortcuts,
+              newWindow: defaultSettings.shortcuts.newWindow,
+              newWorkspace:
+                withScrollbackDefault.settings.shortcuts.newWorkspace ===
+                "Primary+Shift+N"
+                  ? defaultSettings.shortcuts.newWorkspace
+                  : withScrollbackDefault.settings.shortcuts.newWorkspace,
             },
           },
         };
       },
       partialize: (state) => ({
-        workspaces: state.settings.general.restoreSession
-          ? state.workspaces
-          : [createWorkspace()],
+        workspaces: state.workspaces,
         activeWorkspaceId: state.activeWorkspaceId,
         commandGroups: state.commandGroups,
         connections: state.connections,
@@ -1343,9 +1566,12 @@ export const useAppStore = create<AppStore>()(
             fastExecution: command.fastExecution ?? true,
           })),
         }));
-        const workspaces = (
-          saved.workspaces ?? current.workspaces
-        ).map((workspace) => ({
+        const restoredWorkspaces = settings.general.restoreSession
+          ? saved.workspaces?.length
+            ? saved.workspaces
+            : current.workspaces
+          : [createWorkspace()];
+        const workspaces = restoredWorkspaces.map((workspace) => ({
           ...workspace,
           tabs: workspace.tabs.map((tab) => ({
             ...tab,
@@ -1359,8 +1585,56 @@ export const useAppStore = create<AppStore>()(
           commandGroups,
           connections: saved.connections ?? current.connections,
           workspaces,
+          activeWorkspaceId: workspaces.some(
+            (workspace) => workspace.id === saved.activeWorkspaceId,
+          )
+            ? saved.activeWorkspaceId!
+            : workspaces[0].id,
         };
       },
     },
   ),
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== SHARED_PREFERENCES_STORAGE_KEY || !event.newValue) return;
+    try {
+      const shared = JSON.parse(event.newValue) as SharedPreferences;
+      const current = useAppStore.getState();
+      const settings = shared.settings
+        ? {
+            ...current.settings,
+            ...shared.settings,
+            general: {
+              ...current.settings.general,
+              ...shared.settings.general,
+            },
+            appearance: {
+              ...current.settings.appearance,
+              ...shared.settings.appearance,
+              customPalette: {
+                ...current.settings.appearance.customPalette,
+                ...shared.settings.appearance.customPalette,
+              },
+            },
+            terminal: {
+              ...current.settings.terminal,
+              ...shared.settings.terminal,
+            },
+            shortcuts: {
+              ...current.settings.shortcuts,
+              ...shared.settings.shortcuts,
+            },
+          }
+        : current.settings;
+      useAppStore.setState({
+        settings,
+        commandGroups: shared.commandGroups ?? current.commandGroups,
+        connections: shared.connections ?? current.connections,
+      });
+    } catch {
+      // Ignore incomplete writes from another renderer window.
+    }
+  });
+}

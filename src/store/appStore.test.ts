@@ -52,6 +52,113 @@ describe("split tree", () => {
       "browser-page-two",
     ]);
   });
+
+  it("moves a note tab into a terminal split without losing its scroll position", () => {
+    const original = useAppStore.getState();
+    const workspace = original.workspaces[0];
+    const terminalTab = workspace.tabs[0];
+    const terminalPane = terminalTab.root as SplitNode & { type: "pane" };
+    try {
+      useAppStore.setState({
+        workspaces: [{ ...workspace, tabs: [terminalTab], activeTabId: terminalTab.id }],
+        activeWorkspaceId: workspace.id,
+      });
+      const note = useAppStore.getState().addTab(workspace.id, { kind: "note" });
+      useAppStore.getState().updatePane(
+        workspace.id,
+        note.tabId,
+        note.paneId,
+        { noteContent: "one\ntwo\nthree", noteScrollTop: 128 },
+      );
+
+      expect(
+        useAppStore.getState().movePaneToSplit(
+          workspace.id,
+          note.tabId,
+          note.paneId,
+          terminalTab.id,
+          terminalPane.id,
+          "horizontal",
+        ),
+      ).toBe(true);
+
+      const updatedWorkspace = useAppStore
+        .getState()
+        .workspaces.find((item) => item.id === workspace.id)!;
+      const updatedTab = updatedWorkspace.tabs.find(
+        (item) => item.id === terminalTab.id,
+      )!;
+      expect(updatedWorkspace.tabs.some((item) => item.id === note.tabId)).toBe(
+        false,
+      );
+      expect(updatedTab.root.type).toBe("split");
+      if (updatedTab.root.type === "split") {
+        expect(updatedTab.root.second).toMatchObject({
+          id: note.paneId,
+          kind: "note",
+          noteContent: "one\ntwo\nthree",
+          noteScrollTop: 128,
+        });
+      }
+    } finally {
+      useAppStore.setState({
+        workspaces: original.workspaces,
+        activeWorkspaceId: original.activeWorkspaceId,
+      });
+    }
+  });
+
+  it.each(["terminal", "browser", "files"] as const)(
+    "moves a %s tab into another pane",
+    (kind) => {
+      const original = useAppStore.getState();
+      const workspace = original.workspaces[0];
+      const targetTab = workspace.tabs[0];
+      const targetPane = targetTab.root as SplitNode & { type: "pane" };
+      try {
+        useAppStore.setState({
+          workspaces: [
+            {
+              ...workspace,
+              tabs: [targetTab],
+              activeTabId: targetTab.id,
+            },
+          ],
+          activeWorkspaceId: workspace.id,
+        });
+        const source = useAppStore.getState().addTab(workspace.id, { kind });
+
+        expect(
+          useAppStore.getState().movePaneToSplit(
+            workspace.id,
+            source.tabId,
+            source.paneId,
+            targetTab.id,
+            targetPane.id,
+            "vertical",
+          ),
+        ).toBe(true);
+
+        const updatedWorkspace = useAppStore
+          .getState()
+          .workspaces.find((item) => item.id === workspace.id)!;
+        const updatedTab = updatedWorkspace.tabs.find(
+          (item) => item.id === targetTab.id,
+        )!;
+        expect(updatedWorkspace.tabs).toHaveLength(1);
+        expect(updatedTab.root).toMatchObject({
+          type: "split",
+          direction: "vertical",
+          second: { id: source.paneId, kind },
+        });
+      } finally {
+        useAppStore.setState({
+          workspaces: original.workspaces,
+          activeWorkspaceId: original.activeWorkspaceId,
+        });
+      }
+    },
+  );
 });
 
 describe("drag ordering", () => {
@@ -148,6 +255,7 @@ describe("appearance customization", () => {
     expect(defaultSettings.appearance.uiFontFamily).toBe("system-ui");
     expect(defaultSettings.terminal.copyOnSelect).toBe(true);
     expect(defaultSettings.terminal.commandSuggestions).toBe(false);
+    expect(defaultSettings.general.restoreSession).toBe(false);
 
     const appearance = {
       ...defaultSettings.appearance,
@@ -163,6 +271,44 @@ describe("appearance customization", () => {
 
     expect(theme.ui.accent).toBe("#12abde");
     expect(theme.xterm.background).toBe("rgba(16, 24, 32, 0.5)");
+  });
+});
+
+describe("session persistence", () => {
+  it("starts clean by default and restores the snapshot only when enabled", () => {
+    const state = useAppStore.getState();
+    const partialize = useAppStore.persist.getOptions().partialize!;
+    const merge = useAppStore.persist.getOptions().merge!;
+    const savedWorkspace = {
+      ...state.workspaces[0],
+      id: "saved-workspace",
+      name: "Saved workspace",
+    };
+    const cleanSnapshot = partialize({
+      ...state,
+      workspaces: [savedWorkspace],
+      activeWorkspaceId: savedWorkspace.id,
+      settings: {
+        ...state.settings,
+        general: { ...state.settings.general, restoreSession: false },
+      },
+    });
+    const restoredSnapshot = {
+      ...cleanSnapshot,
+      settings: {
+        ...state.settings,
+        general: { ...state.settings.general, restoreSession: true },
+      },
+    };
+    const clean = merge(cleanSnapshot, state);
+    const restored = merge(restoredSnapshot, state);
+
+    expect(clean.settings.general.restoreSession).toBe(false);
+    expect(clean.workspaces).toHaveLength(1);
+    expect(clean.workspaces[0].id).not.toBe(savedWorkspace.id);
+    expect(restored.settings.general.restoreSession).toBe(true);
+    expect(restored.workspaces[0].id).toBe(savedWorkspace.id);
+    expect(restored.activeWorkspaceId).toBe(savedWorkspace.id);
   });
 });
 
