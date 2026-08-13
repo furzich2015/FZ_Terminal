@@ -22,6 +22,7 @@ import type {
   Workspace,
 } from "../types";
 import { useAppStore } from "../store/appStore";
+import { PANE_DRAG_MIME, parsePaneDrag } from "../lib/paneDrag";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import type { FileTerminalAction } from "./FilesPane";
 import { TerminalPane } from "./TerminalPane";
@@ -43,6 +44,13 @@ const NotePane = lazy(() =>
 );
 
 type PaneNode = SplitNode & { type: "pane" };
+
+const paneLabels: Record<TabKind, string> = {
+  terminal: "terminal",
+  browser: "browser",
+  files: "files",
+  note: "note",
+};
 
 interface SplitViewProps {
   node: SplitNode;
@@ -91,11 +99,13 @@ export function SplitView(props: SplitViewProps) {
   } = props;
   const setActivePane = useAppStore((state) => state.setActivePane);
   const splitPane = useAppStore((state) => state.splitPane);
+  const movePaneToSplit = useAppStore((state) => state.movePaneToSplit);
   const setSplitRatio = useAppStore((state) => state.setSplitRatio);
   const updatePane = useAppStore((state) => state.updatePane);
   const addTab = useAppStore((state) => state.addTab);
   const containerRef = useRef<HTMLDivElement>(null);
   const [paneMenu, setPaneMenu] = useState<MenuPosition | null>(null);
+  const [paneDropKind, setPaneDropKind] = useState<TabKind | null>(null);
 
   if (node.type === "pane") {
     const kind = node.kind ?? tab.kind;
@@ -104,15 +114,68 @@ export function SplitView(props: SplitViewProps) {
     const focus = () => setActivePane(workspace.id, tab.id, node.id);
     return (
       <div
-        className={`pane-cell ${node.id === tab.activePaneId ? "active" : ""}`}
+        className={`pane-cell ${node.id === tab.activePaneId ? "active" : ""} ${
+          paneDropKind ? "pane-drop-target" : ""
+        }`}
         data-pane-id={node.id}
         data-pane-kind={kind}
+        data-drop-label={
+          paneDropKind
+            ? `Drop ${paneLabels[paneDropKind]} to split this pane`
+            : undefined
+        }
         onMouseDown={focus}
         onContextMenu={(event) => {
           if (kind === "terminal" || event.defaultPrevented) return;
           event.preventDefault();
           focus();
           setPaneMenu({ x: event.clientX, y: event.clientY });
+        }}
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
+          const source = parsePaneDrag(
+            event.dataTransfer.getData(PANE_DRAG_MIME),
+          );
+          if (source?.tabId === tab.id) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setPaneDropKind(source?.kind ?? "terminal");
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            return;
+          }
+          setPaneDropKind(null);
+        }}
+        onDrop={(event) => {
+          setPaneDropKind(null);
+          const source = parsePaneDrag(
+            event.dataTransfer.getData(PANE_DRAG_MIME),
+          );
+          if (
+            !source ||
+            source.workspaceId !== workspace.id ||
+            source.tabId === tab.id
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = event.currentTarget.getBoundingClientRect();
+          const horizontalBias =
+            Math.abs(event.clientX - (rect.left + rect.width / 2)) /
+            Math.max(1, rect.width);
+          const verticalBias =
+            Math.abs(event.clientY - (rect.top + rect.height / 2)) /
+            Math.max(1, rect.height);
+          movePaneToSplit(
+            workspace.id,
+            source.tabId,
+            source.paneId,
+            tab.id,
+            node.id,
+            verticalBias > horizontalBias ? "vertical" : "horizontal",
+          );
         }}
       >
         {kind === "terminal" && (
@@ -180,9 +243,13 @@ export function SplitView(props: SplitViewProps) {
             <NotePane
               key={node.id}
               initialContent={node.noteContent ?? tab.noteContent ?? ""}
+              initialScrollTop={node.noteScrollTop}
               onNewTab={() => addTab(workspace.id, { kind: "note" })}
               onChange={(noteContent) =>
                 updatePane(workspace.id, tab.id, node.id, { noteContent })
+              }
+              onScrollChange={(noteScrollTop) =>
+                updatePane(workspace.id, tab.id, node.id, { noteScrollTop })
               }
             />
           </Suspense>

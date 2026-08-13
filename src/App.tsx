@@ -133,6 +133,7 @@ export function App() {
   }, [activeWorkspace, addTab]);
 
   const handlers = {
+    newWindow: () => window.fzTerminal.window.newWindow(),
     newWorkspace: () => addWorkspace(),
     newTab: () => addNewTab("terminal"),
     closeCurrentTab: () => {
@@ -273,6 +274,7 @@ export function App() {
     }
 
     const actions: Record<ShortcutAction, () => void> = {
+      newWindow: handlers.newWindow,
       newTab: handlers.newTab,
       closeTab: activePane
         ? handlers.closeCurrentPane

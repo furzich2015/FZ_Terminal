@@ -1,5 +1,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+const windowIdArgument = process.argv.find((argument) =>
+  argument.startsWith("--fz-window-id="),
+);
+const windowId = windowIdArgument?.slice("--fz-window-id=".length) || "primary";
+
 const isSessionId = (value) =>
   typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
 const isSafeText = (value, limit = 4096) =>
@@ -50,6 +55,8 @@ const sanitizeBounds = (bounds) => {
 
 contextBridge.exposeInMainWorld("fzTerminal", {
   window: {
+    id: windowId,
+    newWindow: () => ipcRenderer.send("window:new"),
     minimize: () => ipcRenderer.send("window:minimize"),
     toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
     close: () => ipcRenderer.send("window:close"),
@@ -178,18 +185,30 @@ contextBridge.exposeInMainWorld("fzTerminal", {
   },
   files: {
     home: () => ipcRenderer.invoke("files:home"),
-    listDirectory: (directory) => {
-      if (directory !== undefined && !isSafeText(directory)) {
+    listDirectory: (directory, sudoPassword) => {
+      if (
+        (directory !== undefined && !isSafeText(directory)) ||
+        !isSafePassword(sudoPassword)
+      ) {
         throw new Error("Invalid directory");
       }
-      return ipcRenderer.invoke("files:list-directory", directory);
+      return ipcRenderer.invoke("files:list-directory", {
+        path: directory ?? "~",
+        ...(sudoPassword ? { sudoPassword } : {}),
+      });
     },
-    listRemoteDirectory: (connection, directory, force = false) => {
+    listRemoteDirectory: (
+      connection,
+      directory,
+      force = false,
+      sudoPassword,
+    ) => {
       if (
         !connection ||
         typeof connection !== "object" ||
         !isSafeText(connection.host, 255) ||
-        (directory !== undefined && !isSafeText(directory, 2048))
+        (directory !== undefined && !isSafeText(directory, 2048)) ||
+        !isSafePassword(sudoPassword)
       ) {
         throw new Error("Invalid remote directory request");
       }
@@ -198,6 +217,7 @@ contextBridge.exposeInMainWorld("fzTerminal", {
         connection,
         directory,
         Boolean(force),
+        sudoPassword,
       );
     },
     transfer: (connection, request) => {

@@ -22,6 +22,7 @@ export type SplitNode =
       remoteFilePath?: string;
       remoteConnectionId?: string;
       noteContent?: string;
+      noteScrollTop?: number;
     }
   | {
       type: "split";
@@ -138,6 +139,7 @@ export interface CustomPalette {
 }
 
 export type ShortcutAction =
+  | "newWindow"
   | "newTab"
   | "closeTab"
   | "nextTab"
@@ -383,6 +385,8 @@ export interface UpdateStatus {
 
 export interface FzTerminalBridge {
   window: {
+    id: string;
+    newWindow: () => void;
     minimize: () => void;
     toggleMaximize: () => void;
     close: () => void;
@@ -427,11 +431,15 @@ export interface FzTerminalBridge {
   };
   files: {
     home: () => Promise<string>;
-    listDirectory: (directory?: string) => Promise<DirectoryListing>;
+    listDirectory: (
+      directory?: string,
+      sudoPassword?: string,
+    ) => Promise<DirectoryListing>;
     listRemoteDirectory: (
       connection: RemoteConnection,
       directory?: string,
       force?: boolean,
+      sudoPassword?: string,
     ) => Promise<DirectoryListing>;
     transfer: (
       connection: RemoteConnection,

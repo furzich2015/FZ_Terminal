@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  AppWindow,
   Columns2,
   Download,
   LoaderCircle,
@@ -94,6 +95,14 @@ export function TitleBar({
             )}
           </button>
         )}
+        <button
+          className="toolbar-button"
+          type="button"
+          title="New window"
+          onClick={window.fzTerminal.window.newWindow}
+        >
+          <AppWindow size={14} />
+        </button>
         <button
           className="toolbar-button"
           type="button"

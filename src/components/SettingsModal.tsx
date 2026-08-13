@@ -210,7 +210,7 @@ export function SettingsModal({
                     updateGeneral({ restoreSession })
                   }
                   label="Restore the previous session"
-                  description="Recreate workspaces, tabs, and split layouts at startup."
+                  description="Keep workspaces, tabs, notes, and split layouts after the app closes. Disabled by default, so a new launch starts clean."
                 />
                 <Toggle
                   checked={settings.general.confirmBeforeClose}

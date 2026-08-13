@@ -874,33 +874,47 @@ export function TerminalPane({
 
     let fittedCols = terminal.cols;
     let fittedRows = terminal.rows;
-    const fit = () => {
+    let fitFrame: number | null = null;
+    let ptyResizeTimer: number | null = null;
+    const performFit = () => {
       if (disposed) return;
       try {
-        const dimensions = fitAddon.proposeDimensions();
-        if (dimensions) {
-          terminal.resize(dimensions.cols, dimensions.rows);
-        } else {
-          fitAddon.fit();
-        }
+        if (host.clientWidth < 1 || host.clientHeight < 1) return;
+        fitAddon.fit();
         const geometryChanged =
           terminal.cols !== fittedCols || terminal.rows !== fittedRows;
         fittedCols = terminal.cols;
         fittedRows = terminal.rows;
-        if (geometryChanged && screenCopyModeRef.current) {
-          window.fzTerminal.pty.write(pane.sessionId, "\x1b");
-          screenCopyModeRef.current = false;
-          setScreenCopyActive(false);
+        if (geometryChanged) {
+          terminal.refresh(0, Math.max(0, terminal.rows - 1));
+          if (screenCopyModeRef.current) {
+            window.fzTerminal.pty.write(pane.sessionId, "\x1b");
+            screenCopyModeRef.current = false;
+            setScreenCopyActive(false);
+          }
+          if (ptyResizeTimer !== null) {
+            window.clearTimeout(ptyResizeTimer);
+          }
+          ptyResizeTimer = window.setTimeout(() => {
+            ptyResizeTimer = null;
+            window.fzTerminal.pty.resize(
+              pane.sessionId,
+              terminal.cols,
+              terminal.rows,
+            );
+          }, 48);
         }
-        window.fzTerminal.pty.resize(
-          pane.sessionId,
-          terminal.cols,
-          terminal.rows,
-        );
         scheduleSuggestionPosition();
       } catch {
         // The pane can be hidden while changing tabs.
       }
+    };
+    const fit = () => {
+      if (disposed || fitFrame !== null) return;
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = null;
+        performFit();
+      });
     };
     fitTerminalRef.current = fit;
     const observer = new ResizeObserver(fit);
@@ -951,7 +965,7 @@ export function TerminalPane({
     });
     window.addEventListener("resize", fit);
     const frame = requestAnimationFrame(async () => {
-      fit();
+      performFit();
       const result = await window.fzTerminal.pty.create({
         id: pane.sessionId,
         cols: terminal.cols,
@@ -961,7 +975,10 @@ export function TerminalPane({
       if (disposed) return;
       if (result.backlog) terminal.write(result.backlog);
       fit();
-      requestAnimationFrame(fit);
+      requestAnimationFrame(() => {
+        performFit();
+        terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      });
       terminal.focus();
     });
     const fitTimers = [60, 180, 420].map((delay) =>
@@ -977,6 +994,8 @@ export function TerminalPane({
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
+      if (fitFrame !== null) cancelAnimationFrame(fitFrame);
+      if (ptyResizeTimer !== null) window.clearTimeout(ptyResizeTimer);
       fitTimers.forEach(window.clearTimeout);
       window.clearInterval(fitInterval);
       window.clearTimeout(stopFitInterval);

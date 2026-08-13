@@ -20,6 +20,7 @@ import type {
   Workspace,
 } from "../types";
 import { useAppStore } from "../store/appStore";
+import { PANE_DRAG_MIME } from "../lib/paneDrag";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 
 interface TabBarProps {
@@ -174,6 +175,8 @@ export function TabBar({
           {workspace.tabs.map((tab) => {
             const active = tab.id === workspace.activeTabId;
             const TabIcon = tabIcons[tab.kind];
+            const draggedPane =
+              findPane(tab.root, tab.activePaneId) ?? firstPane(tab.root);
             return (
               <div
                 className={`tab ${active ? "active" : ""} ${
@@ -190,16 +193,22 @@ export function TabBar({
                     "application/x-fz-tab",
                     tab.id,
                   );
+                  event.dataTransfer.setData(
+                    PANE_DRAG_MIME,
+                    JSON.stringify({
+                      workspaceId: workspace.id,
+                      tabId: tab.id,
+                      paneId: draggedPane.id,
+                      kind: draggedPane.kind,
+                    }),
+                  );
                 }}
                 onDragEnd={() => setDragOverId(null)}
                 onDragOver={(event) => {
-                  if (
-                    !event.dataTransfer.types.includes(
-                      "application/x-fz-tab",
-                    )
-                  ) {
-                    return;
-                  }
+                  const movesTab = event.dataTransfer.types.includes(
+                    "application/x-fz-tab",
+                  );
+                  if (!movesTab) return;
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "move";
                   setDragOverId(tab.id);
@@ -358,3 +367,17 @@ const tabIcons = {
   files: Files,
   note: StickyNote,
 } satisfies Record<TabKind, typeof TerminalSquare>;
+
+function findPane(
+  node: TerminalTab["root"],
+  paneId: string,
+): (TerminalTab["root"] & { type: "pane" }) | null {
+  if (node.type === "pane") return node.id === paneId ? node : null;
+  return findPane(node.first, paneId) ?? findPane(node.second, paneId);
+}
+
+function firstPane(
+  node: TerminalTab["root"],
+): TerminalTab["root"] & { type: "pane" } {
+  return node.type === "pane" ? node : firstPane(node.first);
+}
