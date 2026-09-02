@@ -4,6 +4,8 @@ import {
   connectionsMatch,
   detectTerminalDirectory,
   selectFileTerminalCandidate,
+  selectQuickCommandPane,
+  shouldBlockTerminalInput,
 } from "./terminalContext";
 
 const connection: RemoteConnection = {
@@ -101,5 +103,37 @@ describe("terminal context", () => {
         connection,
       )?.id,
     ).toBe("local");
+  });
+
+  it("routes quick commands to the active terminal in a split", () => {
+    const upper = {
+      type: "pane" as const,
+      id: "upper",
+      sessionId: "session-upper",
+      kind: "terminal" as const,
+    };
+    const lower = {
+      type: "pane" as const,
+      id: "lower",
+      sessionId: "session-lower",
+      kind: "terminal" as const,
+    };
+    const root = {
+      type: "split" as const,
+      id: "split",
+      direction: "vertical" as const,
+      ratio: 0.5,
+      first: upper,
+      second: lower,
+    };
+
+    expect(selectQuickCommandPane(root, lower.id, "terminal")?.id).toBe(
+      lower.id,
+    );
+  });
+
+  it("keeps accepting command-history input inside an SSH shell", () => {
+    expect(shouldBlockTerminalInput(true, false)).toBe(true);
+    expect(shouldBlockTerminalInput(true, true)).toBe(false);
   });
 });

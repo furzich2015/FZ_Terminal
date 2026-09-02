@@ -2,7 +2,47 @@ import type {
   DetectedRemoteConnection,
   PtyContext,
   RemoteConnection,
+  SplitNode,
+  TabKind,
 } from "../types";
+
+type PaneNode = SplitNode & { type: "pane" };
+
+function findPane(node: SplitNode, paneId: string): PaneNode | undefined {
+  if (node.type === "pane") return node.id === paneId ? node : undefined;
+  return findPane(node.first, paneId) ?? findPane(node.second, paneId);
+}
+
+function findFirstTerminalPane(
+  node: SplitNode,
+  defaultKind: TabKind,
+): PaneNode | undefined {
+  if (node.type === "pane") {
+    return (node.kind ?? defaultKind) === "terminal" ? node : undefined;
+  }
+  return (
+    findFirstTerminalPane(node.first, defaultKind) ??
+    findFirstTerminalPane(node.second, defaultKind)
+  );
+}
+
+export function selectQuickCommandPane(
+  root: SplitNode,
+  activePaneId: string,
+  defaultKind: TabKind,
+) {
+  const active = findPane(root, activePaneId);
+  return active && (active.kind ?? defaultKind) === "terminal"
+    ? active
+    : findFirstTerminalPane(root, defaultKind);
+}
+
+export function shouldBlockTerminalInput(
+  foregroundCommandRunning: boolean,
+  remoteSession: boolean,
+) {
+  return foregroundCommandRunning && !remoteSession;
+}
 
 function normalizeHost(value: string) {
   return value.trim().replace(/^\[(.*)\]$/, "$1").toLowerCase();

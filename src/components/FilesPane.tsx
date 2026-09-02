@@ -2,6 +2,7 @@ import {
   useEffect,
   useEffectEvent,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -94,6 +95,10 @@ interface SudoRequest {
   run: (password: string) => Promise<void>;
 }
 
+interface TransferProgressState {
+  percent?: number;
+}
+
 const emptyDraft: ConnectionDraft = {
   name: "",
   host: "",
@@ -130,11 +135,8 @@ export function FilesPane({
   const [remotePath, setRemotePath] = useState(initialRemotePath ?? "~");
   const [localFilter, setLocalFilter] = useState("");
   const [remoteFilter, setRemoteFilter] = useState("");
-  const [localSelected, setLocalSelected] = useState<DirectoryEntry | null>(
-    null,
-  );
-  const [remoteSelected, setRemoteSelected] =
-    useState<DirectoryEntry | null>(null);
+  const [localSelected, setLocalSelected] = useState<DirectoryEntry[]>([]);
+  const [remoteSelected, setRemoteSelected] = useState<DirectoryEntry[]>([]);
   const [localLoading, setLocalLoading] = useState(true);
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -146,6 +148,7 @@ export function FilesPane({
     useState<ConnectionDraft | null>(null);
   const [menu, setMenu] = useState<{
     entry: DirectoryEntry;
+    entries: DirectoryEntry[];
     side: FileSide;
     position: MenuPosition;
   } | null>(null);
@@ -156,6 +159,8 @@ export function FilesPane({
   const [grepPattern, setGrepPattern] = useState("");
   const [transferLoading, setTransferLoading] = useState(false);
   const [transferNotice, setTransferNotice] = useState("");
+  const [transferProgress, setTransferProgress] =
+    useState<TransferProgressState | null>(null);
   const [createFolderTarget, setCreateFolderTarget] = useState<{
     side: FileSide;
     parent: string;
@@ -163,27 +168,51 @@ export function FilesPane({
   const [folderName, setFolderName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<{
     side: FileSide;
-    entry: DirectoryEntry;
+    entries: DirectoryEntry[];
   } | null>(null);
   const [editor, setEditor] = useState<FileEditorState | null>(null);
   const [confirmEditorClose, setConfirmEditorClose] = useState(false);
   const [sudoRequest, setSudoRequest] = useState<SudoRequest | null>(null);
+  const sudoPasswordsRef = useRef(new Map<string, string>());
   const readInitialPath = useEffectEvent(() => initialPath);
 
   const requestSudo = (
     reason: unknown,
     title: string,
+    scope: string,
     run: (password: string) => Promise<void>,
   ) => {
     if (!isPermissionError(reason)) return false;
-    setSudoRequest({
+    const detail = formatFileError(
+      reason,
+      "This operation requires administrator permissions.",
+    );
+    const authorize = async (password: string) => {
+      try {
+        await run(password);
+        sudoPasswordsRef.current.set(scope, password);
+      } catch (nextReason) {
+        if (isSudoAuthenticationError(nextReason)) {
+          sudoPasswordsRef.current.delete(scope);
+        }
+        throw nextReason;
+      }
+    };
+    const prompt = () => setSudoRequest({
       title,
-      detail: formatFileError(
-        reason,
-        "This operation requires administrator permissions.",
-      ),
-      run,
+      detail,
+      run: authorize,
     });
+    const remembered = sudoPasswordsRef.current.get(scope);
+    if (remembered) {
+      window.setTimeout(() => {
+        void authorize(remembered).catch((nextReason) => {
+          if (isSudoAuthenticationError(nextReason)) prompt();
+        });
+      }, 0);
+      return true;
+    }
+    prompt();
     return true;
   };
 
@@ -202,6 +231,8 @@ export function FilesPane({
   const selectedConnection = connections.find(
     (connection) => connection.id === effectiveConnectionId,
   );
+  const sudoScope = (side: FileSide, connection = selectedConnection) =>
+    side === "local" ? "local" : `remote:${connection?.id ?? "unknown"}`;
   const selectedConnectionKey = selectedConnection?.id;
   const orderedConnections = useMemo(
     () =>
@@ -227,13 +258,16 @@ export function FilesPane({
       );
       setLocal(next);
       setLocalPath(next.cwd);
-      setLocalSelected(null);
+      setLocalSelected([]);
       onStateChange({ filePath: next.cwd });
     } catch (reason) {
       if (
         !sudoPassword &&
-        requestSudo(reason, "Open protected folder with sudo", (password) =>
-          openLocalDirectory(directory, password),
+        requestSudo(
+          reason,
+          "Open protected folder with sudo",
+          sudoScope("local"),
+          (password) => openLocalDirectory(directory, password),
         )
       ) {
         return;
@@ -262,7 +296,7 @@ export function FilesPane({
       );
       setRemote(next);
       setRemotePath(next.cwd);
-      setRemoteSelected(null);
+      setRemoteSelected([]);
       onStateChange({
         remoteConnectionId: connection.id,
         remoteFilePath: next.cwd,
@@ -273,6 +307,7 @@ export function FilesPane({
         requestSudo(
           reason,
           "Open protected remote folder with sudo",
+          sudoScope("remote", connection),
           (password) =>
             openRemoteDirectory(connection, directory, true, password),
         )
@@ -303,7 +338,9 @@ export function FilesPane({
   );
 
   useEffect(() => {
+    const passwords = sudoPasswordsRef.current;
     void openInitialDirectory(readInitialPath());
+    return () => passwords.clear();
   }, []);
 
   useEffect(() => {
@@ -317,8 +354,10 @@ export function FilesPane({
 
   const localVisible = filterEntries(local.entries, localFilter);
   const remoteVisible = filterEntries(remote.entries, remoteFilter);
-  const selectedLocalPath = localSelected?.path ?? local.cwd;
-  const selectedRemotePath = remoteSelected?.path ?? remote.cwd;
+  const primaryLocalSelection = localSelected.at(-1) ?? null;
+  const primaryRemoteSelection = remoteSelected.at(-1) ?? null;
+  const selectedLocalPath = primaryLocalSelection?.path ?? local.cwd;
+  const selectedRemotePath = primaryRemoteSelection?.path ?? remote.cwd;
 
   const setOperationError = (side: FileSide, reason: unknown, fallback: string) => {
     const message = formatFileError(reason, fallback);
@@ -371,8 +410,12 @@ export function FilesPane({
     } catch (reason) {
       if (
         !sudoPassword &&
-        requestSudo(reason, `Create “${trimmedName}” with sudo`, (password) =>
-          createDirectory(side, trimmedName, parentDirectory, password),
+        requestSudo(
+          reason,
+          `Create “${trimmedName}” with sudo`,
+          sudoScope(side),
+          (password) =>
+            createDirectory(side, trimmedName, parentDirectory, password),
         )
       ) {
         return;
@@ -382,28 +425,42 @@ export function FilesPane({
     }
   };
 
-  const deleteEntry = async (
+  const deleteEntries = async (
     side: FileSide,
-    entry: DirectoryEntry,
+    entries: DirectoryEntry[],
     sudoPassword?: string,
   ) => {
+    let completed = 0;
     try {
-      await window.fzTerminal.files.deleteEntry({
-        path: entry.path ?? entry.name,
-        directory: entry.directory,
-        ...(side === "remote" && selectedConnection
-          ? { connection: selectedConnection }
-          : {}),
-        ...(sudoPassword ? { sudoPassword } : {}),
-      });
+      for (const [index, entry] of entries.entries()) {
+        await window.fzTerminal.files.deleteEntry({
+          path: entry.path ?? entry.name,
+          directory: entry.directory,
+          ...(side === "remote" && selectedConnection
+            ? { connection: selectedConnection }
+            : {}),
+          ...(sudoPassword ? { sudoPassword } : {}),
+        });
+        completed = index + 1;
+      }
       await refreshSide(side, sudoPassword);
-      setTransferNotice(`${entry.name} deleted.`);
+      setTransferNotice(
+        entries.length === 1
+          ? `${entries[0].name} deleted.`
+          : `${entries.length} items deleted.`,
+      );
       window.setTimeout(() => setTransferNotice(""), 3000);
     } catch (reason) {
+      const remaining = entries.slice(completed);
       if (
         !sudoPassword &&
-        requestSudo(reason, `Delete “${entry.name}” with sudo`, (password) =>
-          deleteEntry(side, entry, password),
+        requestSudo(
+          reason,
+          remaining.length === 1
+            ? `Delete “${remaining[0].name}” with sudo`
+            : `Delete ${remaining.length} selected items with sudo`,
+          sudoScope(side),
+          (password) => deleteEntries(side, remaining, password),
         )
       ) {
         return;
@@ -419,10 +476,14 @@ export function FilesPane({
     targetDirectory: string,
     sudoPassword?: string,
   ) => {
-    if (
-      payload.path === targetDirectory ||
-      targetDirectory.startsWith(`${payload.path}/`)
-    ) {
+    const entries = payload.entries?.length
+      ? payload.entries
+      : [{ path: payload.path, directory: payload.directory }];
+    if (entries.some(
+      (entry) =>
+        entry.path === targetDirectory ||
+        targetDirectory.startsWith(`${entry.path}/`),
+    )) {
       setOperationError(
         side,
         new Error("A folder cannot be moved into itself."),
@@ -430,27 +491,44 @@ export function FilesPane({
       );
       return;
     }
+    let completed = 0;
     try {
-      await window.fzTerminal.files.moveEntry({
-        sourcePath: payload.path,
-        targetDirectory,
-        ...(side === "remote" && selectedConnection
-          ? { connection: selectedConnection }
-          : {}),
-        ...(sudoPassword ? { sudoPassword } : {}),
-      });
+      for (const [index, entry] of entries.entries()) {
+        await window.fzTerminal.files.moveEntry({
+          sourcePath: entry.path,
+          targetDirectory,
+          ...(side === "remote" && selectedConnection
+            ? { connection: selectedConnection }
+            : {}),
+          ...(sudoPassword ? { sudoPassword } : {}),
+        });
+        completed = index + 1;
+      }
       await refreshSide(side, sudoPassword);
       setTransferNotice(
-        `${fileNameFromPath(payload.path)} moved to ${targetDirectory}.`,
+        entries.length === 1
+          ? `${fileNameFromPath(entries[0].path)} moved to ${targetDirectory}.`
+          : `${entries.length} items moved to ${targetDirectory}.`,
       );
       window.setTimeout(() => setTransferNotice(""), 3000);
     } catch (reason) {
+      const remaining = entries.slice(completed);
+      const retryPayload: FileDragPayload = {
+        side: payload.side,
+        path: remaining[0]?.path ?? payload.path,
+        directory: remaining[0]?.directory ?? payload.directory,
+        entries: remaining,
+      };
       if (
         !sudoPassword &&
         requestSudo(
           reason,
-          `Move “${fileNameFromPath(payload.path)}” with sudo`,
-          (password) => moveEntry(side, payload, targetDirectory, password),
+          remaining.length === 1
+            ? `Move “${fileNameFromPath(remaining[0].path)}” with sudo`
+            : `Move ${remaining.length} selected items with sudo`,
+          sudoScope(side),
+          (password) =>
+            moveEntry(side, retryPayload, targetDirectory, password),
         )
       ) {
         return;
@@ -505,8 +583,11 @@ export function FilesPane({
     } catch (reason) {
       if (
         !sudoPassword &&
-        requestSudo(reason, `Open “${entry.name}” with sudo`, (password) =>
-          loadEditorFile(side, entry, password),
+        requestSudo(
+          reason,
+          `Open “${entry.name}” with sudo`,
+          sudoScope(side),
+          (password) => loadEditorFile(side, entry, password),
         )
       ) {
         setEditor((current) =>
@@ -553,6 +634,7 @@ export function FilesPane({
         requestSudo(
           reason,
           `Save “${snapshot.entry.name}” with sudo`,
+          sudoScope(snapshot.side),
           (password) => saveEditorFile(password),
         )
       ) {
@@ -581,31 +663,57 @@ export function FilesPane({
     }
   };
 
-  const transferEntry = async (
+  const transferEntries = async (
     direction: "upload" | "download",
-    entry: DirectoryEntry,
+    entries: DirectoryEntry[],
     targetDirectory = direction === "upload" ? remote.cwd : local.cwd,
     sudoPassword?: string,
   ) => {
-    if (!selectedConnection || transferLoading) return;
+    if (!selectedConnection || transferLoading || entries.length === 0) return;
+    const connection = selectedConnection;
+    const operation = direction === "upload" ? "Uploading" : "Downloading";
+    const determinate = entries.every((entry) => !entry.directory);
+    let completed = 0;
     setTransferLoading(true);
-    setTransferNotice(
-      `${direction === "upload" ? "Uploading" : "Downloading"} ${entry.name}…`,
-    );
+    setTransferProgress({ percent: determinate ? 0 : undefined });
     try {
-      await window.fzTerminal.files.transfer(selectedConnection, {
-        direction,
-        sourcePath: entry.path ?? entry.name,
-        targetDirectory,
-        directory: entry.directory,
-        ...(sudoPassword ? { sudoPassword } : {}),
-      });
+      for (const [index, entry] of entries.entries()) {
+        setTransferNotice(
+          `${operation} ${entry.name}${entries.length > 1 ? ` (${index + 1}/${entries.length})` : ""}…`,
+        );
+        await window.fzTerminal.files.transfer(
+          connection,
+          {
+            direction,
+            sourcePath: entry.path ?? entry.name,
+            targetDirectory,
+            directory: entry.directory,
+            ...(sudoPassword ? { sudoPassword } : {}),
+          },
+          ({ percent }) => {
+            setTransferProgress({
+              percent:
+                determinate && percent !== undefined
+                  ? ((index + percent / 100) / entries.length) * 100
+                  : undefined,
+            });
+          },
+        );
+        completed = index + 1;
+        if (determinate) {
+          setTransferProgress({
+            percent: (completed / entries.length) * 100,
+          });
+        }
+      }
+      const subject =
+        entries.length === 1 ? entries[0].name : `${entries.length} items`;
       setTransferNotice(
-        `${entry.name} ${direction === "upload" ? "uploaded" : "downloaded"}.`,
+        `${subject} ${direction === "upload" ? "uploaded" : "downloaded"}.`,
       );
       if (direction === "upload") {
         await openRemoteDirectory(
-          selectedConnection,
+          connection,
           remote.cwd,
           true,
           sudoPassword,
@@ -613,18 +721,28 @@ export function FilesPane({
       } else {
         await openLocalDirectory(local.cwd, sudoPassword);
       }
-      window.setTimeout(() => setTransferNotice(""), 3000);
+      window.setTimeout(() => {
+        setTransferNotice("");
+        setTransferProgress(null);
+      }, 3000);
     } catch (reason) {
       setTransferNotice("");
+      setTransferProgress(null);
+      const remaining = entries.slice(completed);
+      const subject =
+        remaining.length === 1
+          ? `“${remaining[0].name}”`
+          : `${remaining.length} selected items`;
       if (
         !sudoPassword &&
         requestSudo(
           reason,
-          `${direction === "upload" ? "Upload" : "Download"} “${entry.name}” with sudo`,
+          `${direction === "upload" ? "Upload" : "Download"} ${subject} with sudo`,
+          sudoScope("remote", connection),
           (password) =>
-            transferEntry(
+            transferEntries(
               direction,
-              entry,
+              remaining,
               targetDirectory,
               password,
             ),
@@ -772,16 +890,22 @@ export function FilesPane({
           { separator: true } as const,
           menu.side === "local"
             ? {
-                label: `Upload to ${selectedConnection.name}`,
+                label:
+                  menu.entries.length > 1
+                    ? `Upload ${menu.entries.length} items to ${selectedConnection.name}`
+                    : `Upload to ${selectedConnection.name}`,
                 icon: Upload,
                 disabled: transferLoading,
-                action: () => void transferEntry("upload", menu.entry),
+                action: () => void transferEntries("upload", menu.entries),
               }
             : {
-                label: "Download to local folder",
+                label:
+                  menu.entries.length > 1
+                    ? `Download ${menu.entries.length} items to local folder`
+                    : "Download to local folder",
                 icon: Download,
                 disabled: transferLoading,
-                action: () => void transferEntry("download", menu.entry),
+                action: () => void transferEntries("download", menu.entries),
               },
         ]
       : []),
@@ -791,11 +915,14 @@ export function FilesPane({
     ...(menu
       ? [
           {
-            label: `Delete ${menu.entry.directory ? "folder" : "file"}…`,
+            label:
+              menu.entries.length > 1
+                ? `Delete ${menu.entries.length} selected items…`
+                : `Delete ${menu.entry.directory ? "folder" : "file"}…`,
             icon: Trash2,
             danger: true,
             action: () =>
-              setDeleteTarget({ side: menu.side, entry: menu.entry }),
+              setDeleteTarget({ side: menu.side, entries: menu.entries }),
           },
           { separator: true } as const,
         ]
@@ -938,17 +1065,17 @@ export function FilesPane({
             setCreateFolderTarget({ side: "local", parent: local.cwd });
             setFolderName("");
           }}
-          onContextMenu={(entry, position) =>
-            setMenu({ entry, side: "local", position })
+          onContextMenu={(entry, entries, position) =>
+            setMenu({ entry, entries, side: "local", position })
           }
           onFileDrop={(payload, targetDirectory) => {
             if (payload.side === "local") {
               void moveEntry("local", payload, targetDirectory);
               return;
             }
-            void transferEntry(
+            void transferEntries(
               "download",
-              entryFromDragPayload(payload),
+              entriesFromDragPayload(payload),
               targetDirectory,
             );
           }}
@@ -959,7 +1086,7 @@ export function FilesPane({
               onClick={() =>
                 onOpenInTerminal(
                   selectedLocalPath,
-                  localSelected?.directory ?? true,
+                  primaryLocalSelection?.directory ?? true,
                   "cat",
                 )
               }
@@ -1010,17 +1137,17 @@ export function FilesPane({
             setCreateFolderTarget({ side: "remote", parent: remote.cwd });
             setFolderName("");
           }}
-          onContextMenu={(entry, position) =>
-            setMenu({ entry, side: "remote", position })
+          onContextMenu={(entry, entries, position) =>
+            setMenu({ entry, entries, side: "remote", position })
           }
           onFileDrop={(payload, targetDirectory) => {
             if (payload.side === "remote") {
               void moveEntry("remote", payload, targetDirectory);
               return;
             }
-            void transferEntry(
+            void transferEntries(
               "upload",
-              entryFromDragPayload(payload),
+              entriesFromDragPayload(payload),
               targetDirectory,
             );
           }}
@@ -1033,7 +1160,7 @@ export function FilesPane({
                   onOpenRemoteInTerminal(
                     selectedConnection,
                     selectedRemotePath,
-                    remoteSelected?.directory ?? true,
+                    primaryRemoteSelection?.directory ?? true,
                     "cat",
                   )
                 }
@@ -1051,9 +1178,35 @@ export function FilesPane({
         />
       </div>
       {transferNotice && (
-        <div className="files-transfer-notice" role="status">
-          {transferLoading ? <RefreshCw className="spin" size={12} /> : null}
-          {transferNotice}
+        <div
+          className={`files-transfer-notice ${
+            transferLoading ? "transferring" : "complete"
+          }`}
+          role="status"
+        >
+          <span>
+            {transferLoading ? <RefreshCw className="spin" size={12} /> : null}
+            {transferNotice}
+            {transferLoading && transferProgress?.percent !== undefined
+              ? ` ${Math.round(transferProgress.percent)}%`
+              : ""}
+          </span>
+          {transferLoading && (
+            <span
+              className={`files-transfer-progress ${
+                transferProgress?.percent === undefined ? "indeterminate" : ""
+              }`}
+              aria-hidden="true"
+            >
+              <span
+                style={
+                  transferProgress?.percent === undefined
+                    ? undefined
+                    : { width: `${transferProgress.percent}%` }
+                }
+              />
+            </span>
+          )}
         </div>
       )}
 
@@ -1117,21 +1270,27 @@ export function FilesPane({
       />
       <ConfirmModal
         open={Boolean(deleteTarget)}
-        title={`Delete ${deleteTarget?.entry.directory ? "folder" : "file"}?`}
+        title={
+          deleteTarget && deleteTarget.entries.length > 1
+            ? `Delete ${deleteTarget.entries.length} selected items?`
+            : `Delete ${deleteTarget?.entries[0]?.directory ? "folder" : "file"}?`
+        }
         message={
           deleteTarget
-            ? `“${deleteTarget.entry.name}” will be permanently deleted${
-                deleteTarget.entry.directory
-                  ? " together with everything inside it"
-                  : ""
-              }.`
+            ? deleteTarget.entries.length > 1
+              ? "All selected files and folders will be permanently deleted, including folder contents."
+              : `“${deleteTarget.entries[0].name}” will be permanently deleted${
+                  deleteTarget.entries[0].directory
+                    ? " together with everything inside it"
+                    : ""
+                }.`
             : ""
         }
         confirmLabel="Delete"
         danger
         onConfirm={() => {
           if (deleteTarget) {
-            void deleteEntry(deleteTarget.side, deleteTarget.entry);
+            void deleteEntries(deleteTarget.side, deleteTarget.entries);
           }
           setDeleteTarget(null);
         }}
@@ -1195,7 +1354,7 @@ interface FileColumnProps {
   path: string;
   listing: DirectoryListing;
   entries: DirectoryEntry[];
-  selected: DirectoryEntry | null;
+  selected: DirectoryEntry[];
   filter: string;
   loading: boolean;
   error: string;
@@ -1203,12 +1362,16 @@ interface FileColumnProps {
   footerAction?: React.ReactNode;
   onPathChange: (value: string) => void;
   onFilterChange: (value: string) => void;
-  onSelect: (entry: DirectoryEntry) => void;
+  onSelect: (entries: DirectoryEntry[]) => void;
   onOpen: (entry: DirectoryEntry) => void;
   onOpenPath: (path: string) => void;
   onRefresh: () => void;
   onCreateDirectory: () => void;
-  onContextMenu?: (entry: DirectoryEntry, position: MenuPosition) => void;
+  onContextMenu?: (
+    entry: DirectoryEntry,
+    entries: DirectoryEntry[],
+    position: MenuPosition,
+  ) => void;
   onFileDrop?: (payload: FileDragPayload, targetDirectory: string) => void;
 }
 
@@ -1237,6 +1400,42 @@ function FileColumn({
   onFileDrop,
 }: FileColumnProps) {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const selectionAnchorRef = useRef<string | null>(null);
+  const selectedPaths = new Set(selected.map(entryPath));
+  const selectEntry = (
+    entry: DirectoryEntry,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    const key = entryPath(entry);
+    if (event.shiftKey && selectionAnchorRef.current) {
+      const anchorIndex = entries.findIndex(
+        (item) => entryPath(item) === selectionAnchorRef.current,
+      );
+      const entryIndex = entries.findIndex((item) => entryPath(item) === key);
+      if (anchorIndex >= 0 && entryIndex >= 0) {
+        const range = entries.slice(
+          Math.min(anchorIndex, entryIndex),
+          Math.max(anchorIndex, entryIndex) + 1,
+        );
+        onSelect(
+          event.ctrlKey || event.metaKey
+            ? mergeSelectedEntries(selected, range)
+            : range,
+        );
+        return;
+      }
+    }
+    selectionAnchorRef.current = key;
+    if (event.ctrlKey || event.metaKey) {
+      onSelect(
+        selectedPaths.has(key)
+          ? selected.filter((item) => entryPath(item) !== key)
+          : [...selected, entry],
+      );
+      return;
+    }
+    onSelect([entry]);
+  };
   return (
     <section
       className={`file-column ${remote ? "remote" : "local"} ${
@@ -1338,7 +1537,7 @@ function FileColumn({
         {entries.map((entry) => (
           <button
             className={`file-row ${
-              selected?.path === entry.path ? "selected" : ""
+              selectedPaths.has(entryPath(entry)) ? "selected" : ""
             } ${
               entry.directory &&
               dropTarget === (entry.path ?? entry.name)
@@ -1347,14 +1546,22 @@ function FileColumn({
             }`}
             type="button"
             role="listitem"
+            aria-selected={selectedPaths.has(entryPath(entry))}
             key={entry.path ?? entry.name}
-            title={entry.path}
+            title={`${entry.path ?? entry.name}\nCtrl/⌘ click to select multiple; Shift click to select a range`}
             draggable={!disabled}
             onDragStart={(event) => {
+              const draggedEntries = selectedPaths.has(entryPath(entry))
+                ? selected
+                : [entry];
               const payload: FileDragPayload = {
                 side,
                 path: entry.path ?? entry.name,
                 directory: entry.directory,
+                entries: draggedEntries.map((item) => ({
+                  path: entryPath(item),
+                  directory: item.directory,
+                })),
               };
               event.dataTransfer.effectAllowed = "copyMove";
               event.dataTransfer.setData(
@@ -1409,12 +1616,21 @@ function FileColumn({
                 onFileDrop?.(payload, entry.path ?? entry.name);
               }
             }}
-            onClick={() => onSelect(entry)}
+            onClick={(event) => selectEntry(entry, event)}
             onContextMenu={(event) => {
               if (!onContextMenu) return;
               event.preventDefault();
-              onSelect(entry);
-              onContextMenu(entry, { x: event.clientX, y: event.clientY });
+              const contextSelection = selectedPaths.has(entryPath(entry))
+                ? selected
+                : [entry];
+              if (!selectedPaths.has(entryPath(entry))) {
+                selectionAnchorRef.current = entryPath(entry);
+                onSelect(contextSelection);
+              }
+              onContextMenu(entry, contextSelection, {
+                x: event.clientX,
+                y: event.clientY,
+              });
             }}
             onDoubleClick={() => onOpen(entry)}
           >
@@ -1435,7 +1651,11 @@ function FileColumn({
         )}
       </div>
       <footer className="files-status">
-        <code>{selected?.path ?? listing.cwd}</code>
+        <code>
+          {selected.length > 1
+            ? `${selected.length} items selected`
+            : selected[0]?.path ?? listing.cwd}
+        </code>
         {footerAction}
       </footer>
     </section>
@@ -1575,7 +1795,7 @@ function SudoModal({
     <Modal
       open
       title={request.title}
-      subtitle="The password is used only for this operation and is never stored."
+      subtitle="Kept only in memory for this Files pane and cleared when the pane closes."
       width={460}
       onClose={onClose}
       footer={
@@ -1731,17 +1951,43 @@ function fileNameFromPath(value: string) {
   return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
 }
 
-function entryFromDragPayload(payload: FileDragPayload): DirectoryEntry {
-  return {
-    name: fileNameFromPath(payload.path),
-    path: payload.path,
-    directory: payload.directory,
-  };
+function entryPath(entry: DirectoryEntry) {
+  return entry.path ?? entry.name;
+}
+
+function mergeSelectedEntries(
+  current: DirectoryEntry[],
+  additions: DirectoryEntry[],
+) {
+  const result = [...current];
+  const paths = new Set(current.map(entryPath));
+  for (const entry of additions) {
+    if (paths.has(entryPath(entry))) continue;
+    paths.add(entryPath(entry));
+    result.push(entry);
+  }
+  return result;
+}
+
+function entriesFromDragPayload(payload: FileDragPayload): DirectoryEntry[] {
+  return (payload.entries?.length
+    ? payload.entries
+    : [{ path: payload.path, directory: payload.directory }]
+  ).map((entry) => ({
+    name: fileNameFromPath(entry.path),
+    path: entry.path,
+    directory: entry.directory,
+  }));
 }
 
 function isPermissionError(reason: unknown) {
   const message = reason instanceof Error ? reason.message : String(reason);
-  return /FZ_PERMISSION_REQUIRED|EACCES|EPERM|permission denied|operation not permitted|password is required/i.test(
+  return /FZ_PERMISSION_REQUIRED|\bEACCES\b|\bEPERM\b/i.test(message);
+}
+
+function isSudoAuthenticationError(reason: unknown) {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /FZ_SUDO_FAILED|incorrect password|authentication failure|sorry, try again/i.test(
     message,
   );
 }
@@ -1750,6 +1996,7 @@ interface FileDragPayload {
   side: "local" | "remote";
   path: string;
   directory: boolean;
+  entries?: Array<{ path: string; directory: boolean }>;
 }
 
 const FILE_DRAG_MIME = "application/x-fz-terminal-file";
@@ -1765,10 +2012,26 @@ function readFileDragPayload(dataTransfer: DataTransfer) {
     ) {
       return null;
     }
+    const entries = Array.isArray(value.entries)
+      ? value.entries
+          .slice(0, 100)
+          .filter(
+            (entry): entry is { path: string; directory: boolean } =>
+              Boolean(entry) &&
+              typeof entry.path === "string" &&
+              entry.path.length <= 4096 &&
+              !entry.path.includes("\0"),
+          )
+          .map((entry) => ({
+            path: entry.path,
+            directory: Boolean(entry.directory),
+          }))
+      : undefined;
     return {
       side: value.side,
       path: value.path,
       directory: Boolean(value.directory),
+      ...(entries?.length ? { entries } : {}),
     } satisfies FileDragPayload;
   } catch {
     return null;

@@ -195,8 +195,15 @@ function resolveRemoteCompletionDirectory(currentDirectory, requestedDirectory) 
   return path.posix.normalize(`${cwd.replace(/\/$/, "")}/${requested}`);
 }
 
+function isSshAuthenticationFailure(value) {
+  return /permission denied \((?:publickey|keyboard-interactive|gssapi|password)[^)]*\)|host key verification failed|no supported authentication methods|could not resolve hostname|connection (?:timed out|refused)/i.test(
+    String(value || ""),
+  );
+}
+
 module.exports = {
   analyzeSshCommand,
+  isSshAuthenticationFailure,
   parseSshConnection,
   resolveRemoteCompletionDirectory,
 };

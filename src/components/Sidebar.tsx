@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  Copy,
   Edit3,
   FolderPlus,
   GripVertical,
@@ -107,6 +108,14 @@ export function Sidebar({
                 : "Insert command",
             icon: Play,
             action: () => onRunCommand(menu.command!),
+          },
+          {
+            label: "Copy command",
+            icon: Copy,
+            action: () =>
+              void window.fzTerminal.clipboard.writeText(
+                menu.command!.command,
+              ),
           },
           {
             label: "Edit command",

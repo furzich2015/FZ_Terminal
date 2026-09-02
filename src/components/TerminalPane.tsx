@@ -50,7 +50,10 @@ import type {
   ThemeDefinition,
 } from "../types";
 import { buildFontStack } from "../lib/themes";
-import { detectTerminalDirectory } from "../lib/terminalContext";
+import {
+  detectTerminalDirectory,
+  shouldBlockTerminalInput,
+} from "../lib/terminalContext";
 import { useAppStore } from "../store/appStore";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
@@ -264,9 +267,11 @@ export function TerminalPane({
       if (detail.execute) {
         recordCommandRef.current(detail.command);
         inputBufferRef.current = "";
-        foregroundCommandRef.current =
+        foregroundCommandRef.current = shouldBlockTerminalInput(
           foregroundTrackingAvailableRef.current &&
-          Boolean(detail.command.trim());
+            Boolean(detail.command.trim()),
+          remoteSessionRef.current,
+        );
       }
       terminalRef.current?.focus();
       requestAnimationFrame(() => terminalRef.current?.focus());
@@ -571,7 +576,12 @@ export function TerminalPane({
       return true;
     };
     const trackInput = (data: string) => {
-      if (foregroundCommandRef.current) {
+      if (
+        shouldBlockTerminalInput(
+          foregroundCommandRef.current,
+          remoteSessionRef.current,
+        )
+      ) {
         if (data.includes("\x03") || data.includes("\x04")) {
           inputBufferRef.current = "";
           scheduleForegroundSync();
@@ -584,9 +594,10 @@ export function TerminalPane({
         if (character === "\r" || character === "\n") {
           const command = inputBufferRef.current;
           startCommandBlock(command);
-          foregroundCommandRef.current =
-            foregroundTrackingAvailableRef.current &&
-            Boolean(command.trim());
+          foregroundCommandRef.current = shouldBlockTerminalInput(
+            foregroundTrackingAvailableRef.current && Boolean(command.trim()),
+            remoteSessionRef.current,
+          );
           if (foregroundCommandRef.current) scheduleForegroundSync();
           if (isScreenCommand(command)) {
             screenDetectedRef.current = true;
@@ -823,8 +834,11 @@ export function TerminalPane({
         if (typeof context.busy === "boolean") {
           foregroundTrackingAvailableRef.current = true;
           const wasBusy = foregroundCommandRef.current;
-          foregroundCommandRef.current = context.busy;
-          if (context.busy) {
+          foregroundCommandRef.current = shouldBlockTerminalInput(
+            context.busy,
+            context.remote,
+          );
+          if (foregroundCommandRef.current) {
             clearCommandSuggestions();
           } else if (wasBusy) {
             updateCommandSuggestions(inputBufferRef.current);
