@@ -303,6 +303,11 @@ export interface RemoteFileTransferResult {
   targetDirectory: string;
 }
 
+export interface RemoteFileTransferProgress {
+  id: string;
+  percent?: number;
+}
+
 export interface FileOperationRequest {
   path: string;
   connection?: RemoteConnection;
@@ -444,6 +449,7 @@ export interface FzTerminalBridge {
     transfer: (
       connection: RemoteConnection,
       request: RemoteFileTransferRequest,
+      onProgress?: (progress: RemoteFileTransferProgress) => void,
     ) => Promise<RemoteFileTransferResult>;
     remoteTerminalArgs: (
       connection: RemoteConnection,

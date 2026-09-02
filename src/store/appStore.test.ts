@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { CommandGroup, SplitNode, Workspace } from "../types";
+import type {
+  CommandGroup,
+  RemoteConnection,
+  SplitNode,
+  Workspace,
+} from "../types";
 import {
   collectBrowserPaneIds,
   collectSessionIds,
@@ -331,6 +336,52 @@ describe("detected SSH connections", () => {
         useAppStore.getState().connections.find((item) => item.id === id)
           ?.identityFile,
       ).toBe("/opt/fz-test/server-key");
+    } finally {
+      useAppStore.setState({ connections: original.connections });
+    }
+  });
+
+  it("keeps detected servers only while their terminal session is current", () => {
+    const original = useAppStore.getState();
+    const manual: RemoteConnection = {
+      id: "manual-server",
+      name: "Saved server",
+      host: "saved.internal",
+      user: "deploy",
+      port: 22,
+      rootPath: "~",
+      workspaceIds: [],
+      source: "manual",
+    };
+    try {
+      useAppStore.setState({ connections: [manual] });
+      useAppStore.getState().syncDetectedConnections([
+        {
+          workspaceId: original.workspaces[0].id,
+          connection: {
+            host: "active.internal",
+            user: "root",
+            port: 2222,
+            identityFile: "/opt/fz-test/active-key",
+          },
+        },
+      ]);
+
+      expect(useAppStore.getState().connections).toEqual([
+        manual,
+        expect.objectContaining({
+          host: "active.internal",
+          source: "detected",
+          workspaceIds: [original.workspaces[0].id],
+        }),
+      ]);
+      const persisted = useAppStore.persist.getOptions().partialize!(
+        useAppStore.getState(),
+      );
+      expect(persisted.connections).toEqual([manual]);
+
+      useAppStore.getState().syncDetectedConnections([]);
+      expect(useAppStore.getState().connections).toEqual([manual]);
     } finally {
       useAppStore.setState({ connections: original.connections });
     }

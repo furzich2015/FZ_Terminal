@@ -19,7 +19,10 @@ import type {
 } from "./types";
 import { applyTheme, resolveTheme } from "./lib/themes";
 import { isPlainCtrlC, matchesShortcut } from "./lib/shortcuts";
-import { selectFileTerminalCandidate } from "./lib/terminalContext";
+import {
+  selectFileTerminalCandidate,
+  selectQuickCommandPane,
+} from "./lib/terminalContext";
 import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import {
   collectBrowserPaneIds,
@@ -70,6 +73,9 @@ export function App() {
   const splitPane = useAppStore((state) => state.splitPane);
   const closePane = useAppStore((state) => state.closePane);
   const setActivePane = useAppStore((state) => state.setActivePane);
+  const syncDetectedConnections = useAppStore(
+    (state) => state.syncDetectedConnections,
+  );
 
   const [settingsModal, setSettingsModal] = useState<{
     open: boolean;
@@ -121,6 +127,50 @@ export function App() {
       setActiveWorkspace(activeWorkspace.id);
     }
   }, [activeWorkspace, activeWorkspaceId, setActiveWorkspace]);
+
+  const readTerminalCandidates = useEffectEvent(() =>
+    workspaces.flatMap((workspace) =>
+      workspace.tabs.flatMap((tab) =>
+        collectPanesByKind(tab.root, "terminal").map((pane) => ({
+          workspaceId: workspace.id,
+          sessionId: pane.sessionId,
+        })),
+      ),
+    ),
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    const syncConnections = async () => {
+      const candidates = readTerminalCandidates();
+      const detected = await Promise.all(
+        candidates.map(async (candidate) => {
+          try {
+            const context = await window.fzTerminal.pty.getContext(
+              candidate.sessionId,
+            );
+            return context.remote && context.connection
+              ? {
+                  workspaceId: candidate.workspaceId,
+                  connection: context.connection,
+                }
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (!disposed) {
+        syncDetectedConnections(detected.filter((item) => item !== null));
+      }
+    };
+    void syncConnections();
+    const interval = window.setInterval(syncConnections, 1600);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [syncDetectedConnections]);
 
   useEffect(() => {
     const openBrowser = (event: Event) => {
@@ -466,8 +516,9 @@ export function App() {
     if (!activeWorkspace) return null;
     let workspace = activeWorkspace;
     let tab: TerminalTab | undefined = activeTab;
-    let pane =
-      tab && findFirstPaneByKind(tab.root, "terminal");
+    let pane = tab
+      ? (selectQuickCommandPane(tab.root, tab.activePaneId, tab.kind) ?? null)
+      : null;
     if (!pane) {
       tab = workspace.tabs.find((item) =>
         Boolean(findFirstPaneByKind(item.root, "terminal")),

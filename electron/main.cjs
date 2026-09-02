@@ -17,6 +17,7 @@ const { pathToFileURL } = require("node:url");
 const pty = require("node-pty");
 const {
   analyzeSshCommand,
+  isSshAuthenticationFailure,
   parseSshConnection,
   resolveRemoteCompletionDirectory,
 } = require("./ssh-context.cjs");
@@ -1177,9 +1178,10 @@ function listRemoteFileDirectory(
             .trim()
             .slice(0, 400);
           reject(
-            new Error(
-              detail ||
-                "SSH connection failed. Check your SSH agent, config, or key.",
+            fileOperationError(
+              error,
+              detail,
+              "SSH connection failed. Check your SSH agent, config, or key.",
             ),
           );
           return;
@@ -1235,6 +1237,7 @@ function setRemoteDirectoryCache(key, value) {
 
 function sftpConnectionArgs(connection) {
   return [
+    "-N",
     "-b",
     "-",
     "-P",
@@ -1249,19 +1252,75 @@ function sftpConnectionArgs(connection) {
   ];
 }
 
-async function runSftpBatch(connection, command) {
-  try {
-    await runProcess("sftp", sftpConnectionArgs(connection), {
+function runSftpBatch(connection, command, onProgress) {
+  if (process.platform === "win32") {
+    return runProcess("sftp", sftpConnectionArgs(connection), {
       input: Buffer.from(`${command}\n`),
       maxBuffer: 512 * 1024,
       timeout: 120_000,
+    }).catch((error) => {
+      throw fileOperationError(error, "", "SFTP transfer failed");
     });
-  } catch (error) {
-    throw fileOperationError(error, "", "SFTP transfer failed");
   }
+  return new Promise((resolve, reject) => {
+    const child = pty.spawn("sftp", sftpConnectionArgs(connection), {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 24,
+      cwd: os.homedir(),
+      env: { ...process.env, TERM: "xterm-256color" },
+      useConpty: process.platform === "win32",
+    });
+    let output = "";
+    let settled = false;
+    let lastPercent = -1;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // The SFTP process may have already exited.
+      }
+      finish(new Error("SFTP transfer timed out"));
+    }, 120_000);
+    child.onData((data) => {
+      if (output.length < 512 * 1024) output += data;
+      for (const match of data.matchAll(/(?:^|\s)(\d{1,3})%/g)) {
+        const percent = Math.max(0, Math.min(100, Number(match[1])));
+        if (percent !== lastPercent) {
+          lastPercent = percent;
+          try {
+            onProgress?.(percent);
+          } catch {
+            // A closed renderer must not interrupt the underlying transfer.
+          }
+        }
+      }
+    });
+    child.onExit(({ exitCode }) => {
+      if (exitCode === 0) {
+        finish();
+        return;
+      }
+      finish(
+        fileOperationError(
+          { code: exitCode, message: output },
+          output,
+          "SFTP transfer failed",
+        ),
+      );
+    });
+    child.write(`progress\r${command}\r\x04`);
+  });
 }
 
-async function transferRemoteFileElevated(connection, request) {
+async function transferRemoteFileElevated(connection, request, onProgress) {
   const password = normalizeSudoPassword(request.sudoPassword);
   const remoteTemporaryPath = `/tmp/.fz-terminal-${crypto.randomUUID()}`;
   const recursive = request.directory ? "-R " : "";
@@ -1290,6 +1349,9 @@ async function transferRemoteFileElevated(connection, request) {
       await runSftpBatch(
         connection,
         `put ${recursive}${quoteSftpPath(localSource)} ${quoteSftpPath(remoteTemporaryPath)}`,
+        request.directory
+          ? undefined
+          : (percent) => onProgress?.(Math.round(percent * 0.88)),
       );
       const moveScript =
         'if [ -e "$2" ]; then printf FZ_ALREADY_EXISTS >&2; exit 73; fi; mv -- "$1" "$2"';
@@ -1300,6 +1362,7 @@ async function transferRemoteFileElevated(connection, request) {
         input: localSudoInput(password),
         timeout: 120_000,
       });
+      onProgress?.(94);
     } else {
       const remoteSource = normalizeOperationPath(request.sourcePath, true);
       const localDirectory = normalizeOperationPath(
@@ -1322,9 +1385,13 @@ async function transferRemoteFileElevated(connection, request) {
         input: localSudoInput(password),
         timeout: 120_000,
       });
+      onProgress?.(10);
       await runSftpBatch(
         connection,
         `get ${recursive}${quoteSftpPath(remoteTemporaryPath)} ${quoteSftpPath(localTarget)}`,
+        request.directory
+          ? undefined
+          : (percent) => onProgress?.(10 + Math.round(percent * 0.85)),
       );
     }
     remoteDirectoryCache.clear();
@@ -1340,7 +1407,7 @@ async function transferRemoteFileElevated(connection, request) {
   }
 }
 
-async function transferRemoteFile(connectionValue, requestValue) {
+async function transferRemoteFile(connectionValue, requestValue, onProgress) {
   const connection = normalizeRemoteConnection(connectionValue);
   const request =
     requestValue && typeof requestValue === "object" ? requestValue : {};
@@ -1349,7 +1416,7 @@ async function transferRemoteFile(connectionValue, requestValue) {
     throw new Error("Invalid file transfer direction");
   }
   if (request.sudoPassword) {
-    return transferRemoteFileElevated(connection, request);
+    return transferRemoteFileElevated(connection, request, onProgress);
   }
   const recursive = request.directory ? "-R " : "";
   const sourcePath = quoteSftpPath(request.sourcePath);
@@ -1358,7 +1425,11 @@ async function transferRemoteFile(connectionValue, requestValue) {
     direction === "upload"
       ? `put ${recursive}${sourcePath} ${targetDirectory}`
       : `get ${recursive}${sourcePath} ${targetDirectory}`;
-  await runSftpBatch(connection, command);
+  await runSftpBatch(
+    connection,
+    command,
+    request.directory ? undefined : onProgress,
+  );
   remoteDirectoryCache.clear();
   return {
     direction,
@@ -1425,6 +1496,9 @@ function fileOperationError(error, stderr, fallback = "File operation failed") {
   }
   if (raw.includes("FZ_ALREADY_EXISTS")) {
     return new Error("FZ_ALREADY_EXISTS: Destination already exists");
+  }
+  if (isSshAuthenticationFailure(raw)) {
+    return new Error(`FZ_SSH_AUTH_FAILED: ${raw || "SSH authentication failed"}`);
   }
   if (
     error?.code === "EACCES" ||
@@ -2044,9 +2118,30 @@ app.whenReady().then(() => {
         sudoPassword,
       ),
   );
-  ipcMain.handle("files:transfer", (_event, connection, request) =>
-    transferRemoteFile(connection, request),
-  );
+  ipcMain.handle("files:transfer", (event, connection, request) => {
+    const requestedTransferId = String(request?.transferId || "");
+    const transferId = /^[a-zA-Z0-9_-]{1,128}$/.test(requestedTransferId)
+      ? requestedTransferId
+      : "";
+    const sendProgress = (percent) => {
+      if (!transferId || event.sender.isDestroyed()) return;
+      try {
+        event.sender.send("files:transfer-progress", {
+          id: transferId,
+          ...(Number.isFinite(percent) ? { percent } : {}),
+        });
+      } catch {
+        // The renderer may close between the destroyed check and send.
+      }
+    };
+    sendProgress(
+      request?.directory || process.platform === "win32" ? undefined : 0,
+    );
+    return transferRemoteFile(connection, request, sendProgress).then((result) => {
+      sendProgress(100);
+      return result;
+    });
+  });
   ipcMain.handle(
     "files:remote-terminal-args",
     (_event, connection, command) =>

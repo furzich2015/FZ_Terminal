@@ -500,6 +500,12 @@ interface AppStore {
     workspaceId: string,
     value: DetectedRemoteConnection,
   ) => string;
+  syncDetectedConnections: (
+    values: Array<{
+      workspaceId: string;
+      connection: DetectedRemoteConnection;
+    }>,
+  ) => void;
   removeConnection: (connectionId: string) => void;
   updateGeneral: (value: Partial<AppSettings["general"]>) => void;
   updateAppearance: (value: Partial<AppSettings["appearance"]>) => void;
@@ -1080,6 +1086,97 @@ export const useAppStore = create<AppStore>()(
         return id;
       },
 
+      syncDetectedConnections: (values) =>
+        set((state) => {
+          const grouped = new Map<
+            string,
+            { value: DetectedRemoteConnection; workspaceIds: Set<string> }
+          >();
+          for (const { workspaceId, connection } of values) {
+            const user = connection.user?.trim() || undefined;
+            const port = connection.port || 22;
+            const identityFile = connection.identityFile?.trim() || undefined;
+            const key = [
+              user ?? "",
+              connection.host,
+              port,
+              identityFile ?? "",
+            ].join("\0");
+            const current = grouped.get(key);
+            if (current) current.workspaceIds.add(workspaceId);
+            else {
+              grouped.set(key, {
+                value: { ...connection, user, port, identityFile },
+                workspaceIds: new Set([workspaceId]),
+              });
+            }
+          }
+
+          const manual = state.connections
+            .filter((connection) => connection.source === "manual")
+            .map((connection) => {
+              const match = [...grouped.values()].find(
+                ({ value }) =>
+                  value.host === connection.host &&
+                  value.user === connection.user &&
+                  value.port === connection.port,
+              );
+              return {
+                ...connection,
+                workspaceIds: match ? [...match.workspaceIds] : [],
+              };
+            });
+          const detected = [...grouped.values()]
+            .filter(
+              ({ value }) =>
+                !manual.some(
+                  (connection) =>
+                    connection.host === value.host &&
+                    connection.user === value.user &&
+                    connection.port === value.port,
+                ),
+            )
+            .map(({ value, workspaceIds }) => {
+              const existing = state.connections.find(
+                (connection) =>
+                  connection.source === "detected" &&
+                  connection.host === value.host &&
+                  connection.user === value.user &&
+                  connection.port === value.port,
+              );
+              return {
+                id: existing?.id ?? createId("connection"),
+                name: value.user ? `${value.user}@${value.host}` : value.host,
+                host: value.host,
+                user: value.user,
+                port: value.port,
+                rootPath: existing?.rootPath ?? "~",
+                identityFile: value.identityFile,
+                workspaceIds: [...workspaceIds],
+                source: "detected" as const,
+              };
+            });
+          const connections = [...manual, ...detected];
+          const unchanged =
+            connections.length === state.connections.length &&
+            connections.every((connection, index) => {
+              const current = state.connections[index];
+              return (
+                current?.id === connection.id &&
+                current.name === connection.name &&
+                current.host === connection.host &&
+                current.user === connection.user &&
+                current.port === connection.port &&
+                current.rootPath === connection.rootPath &&
+                current.identityFile === connection.identityFile &&
+                current.source === connection.source &&
+                current.workspaceIds.join("\0") ===
+                  connection.workspaceIds.join("\0")
+              );
+            });
+          return unchanged ? state : { connections };
+        }),
+
       removeConnection: (connectionId) =>
         set((state) => ({
           connections: state.connections.filter(
@@ -1525,7 +1622,9 @@ export const useAppStore = create<AppStore>()(
         workspaces: state.workspaces,
         activeWorkspaceId: state.activeWorkspaceId,
         commandGroups: state.commandGroups,
-        connections: state.connections,
+        connections: state.connections
+          .filter((connection) => connection.source === "manual")
+          .map((connection) => ({ ...connection, workspaceIds: [] })),
         settings: state.settings,
         sidebarVisible: state.sidebarVisible,
       }),
@@ -1583,7 +1682,9 @@ export const useAppStore = create<AppStore>()(
           ...saved,
           settings,
           commandGroups,
-          connections: saved.connections ?? current.connections,
+          connections: (saved.connections ?? current.connections)
+            .filter((connection) => connection.source !== "detected")
+            .map((connection) => ({ ...connection, workspaceIds: [] })),
           workspaces,
           activeWorkspaceId: workspaces.some(
             (workspace) => workspace.id === saved.activeWorkspaceId,
@@ -1631,7 +1732,26 @@ if (typeof window !== "undefined") {
       useAppStore.setState({
         settings,
         commandGroups: shared.commandGroups ?? current.commandGroups,
-        connections: shared.connections ?? current.connections,
+        connections: shared.connections
+          ? [
+              ...shared.connections
+                .filter((connection) => connection.source !== "detected")
+                .map((connection) => ({
+                  ...connection,
+                  workspaceIds:
+                    current.connections.find(
+                      (item) =>
+                        item.source === "manual" &&
+                        item.host === connection.host &&
+                        item.user === connection.user &&
+                        item.port === connection.port,
+                    )?.workspaceIds ?? [],
+                })),
+              ...current.connections.filter(
+                (connection) => connection.source === "detected",
+              ),
+            ]
+          : current.connections,
       });
     } catch {
       // Ignore incomplete writes from another renderer window.

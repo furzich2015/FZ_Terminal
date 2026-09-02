@@ -220,7 +220,7 @@ contextBridge.exposeInMainWorld("fzTerminal", {
         sudoPassword,
       );
     },
-    transfer: (connection, request) => {
+    transfer: (connection, request, onProgress) => {
       if (
         !connection ||
         typeof connection !== "object" ||
@@ -234,14 +234,25 @@ contextBridge.exposeInMainWorld("fzTerminal", {
       ) {
         throw new Error("Invalid file transfer request");
       }
+      if (onProgress !== undefined && typeof onProgress !== "function") {
+        throw new Error("Invalid transfer progress callback");
+      }
+      const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const listener = (_event, payload) => {
+        if (payload?.id === transferId) onProgress?.(payload);
+      };
+      ipcRenderer.on("files:transfer-progress", listener);
       return ipcRenderer.invoke("files:transfer", connection, {
         direction: request.direction,
         sourcePath: request.sourcePath,
         targetDirectory: request.targetDirectory,
         directory: Boolean(request.directory),
+        transferId,
         ...(request.sudoPassword
           ? { sudoPassword: request.sudoPassword }
           : {}),
+      }).finally(() => {
+        ipcRenderer.removeListener("files:transfer-progress", listener);
       });
     },
     remoteTerminalArgs: (connection, command) => {

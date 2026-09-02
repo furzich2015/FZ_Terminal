@@ -10,6 +10,7 @@ const sshContext = require("./ssh-context.cjs") as {
     command: string,
     workingDirectory: string,
   ) => { connection: DetectedRemoteConnection } | undefined;
+  isSshAuthenticationFailure: (value: string) => boolean;
   parseSshConnection: (
     args: string[],
     workingDirectory: string,
@@ -80,5 +81,18 @@ describe("SSH process context", () => {
     expect(sshContext.resolveRemoteCompletionDirectory("/srv/app")).toBe(
       "/srv/app",
     );
+  });
+
+  it("does not confuse SSH key authentication failures with sudo", () => {
+    expect(
+      sshContext.isSshAuthenticationFailure(
+        "deploy@server: Permission denied (publickey).",
+      ),
+    ).toBe(true);
+    expect(
+      sshContext.isSshAuthenticationFailure(
+        "find: '/root': Permission denied",
+      ),
+    ).toBe(false);
   });
 });
